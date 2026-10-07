@@ -1,0 +1,158 @@
+{
+  "version": "1.0",
+  "runtime": {
+    "python": "env/bin/python",
+    "notebook_source_dir": "notebooks/src",
+    "logs_dir": "reports/logs",
+    "summaries_dir": "reports/summaries",
+    "execution_policy": ".github/skills/notebook-execution.md"
+  },
+  "excluded_columns": {
+    "pii": [
+      "CUST_NO",
+      "CUST_TRAN_DATE",
+      "PERIOD_ORDER",
+      "BUSINESS_LINE",
+      "PARTITION_KEY",
+      "CUST_TARGET_F"
+    ],
+    "bad_features": [
+      "FOLLOW_CODE_L3M"
+    ]
+  },
+  "temporal_split": {
+    "period_column": "PERIOD_ORDER",
+    "test_periods": [
+      "202603",
+      "202604",
+      "202605"
+    ],
+    "val_periods": [
+      "202512",
+      "202601",
+      "202602"
+    ]
+  },
+  "execution_order": [
+    "feature_type_declaration",
+    "preprocess",
+    "feature_selection",
+    "model_trainer"
+  ],
+  "stages": {
+    "feature_type_declaration": {
+      "agent": ".github/agents/FeatureTypeDeclaration.agent.md",
+      "inputs": {
+        "sql_server": "DUMMY-SQL-SRV01",
+        "sql_database": "DummyDatabase",
+        "sql_table": "dbo.dummy_table",
+        "target_column": "CUST_TARGET_F"
+      },
+      "outputs": {
+        "raw_data": "data/data.parquet",
+        "feature_types": "reports/feature_types.csv",
+        "high_corr_pairs": "reports/high_corr_pairs.csv",
+        "notebook": "notebooks/01_feature_type_declaration.ipynb",
+        "summary": "reports/summaries/feature_type_declaration_summary.json"
+      },
+      "validation": [
+        "data/data.parquet exists",
+        "reports/feature_types.csv exists",
+        "notebooks/01_feature_type_declaration.ipynb executed with errors=0",
+        "reports/summaries/feature_type_declaration_summary.json exists"
+      ]
+    },
+    "preprocess": {
+      "agent": ".github/agents/Preprocess.agent.md",
+      "depends_on": [
+        "feature_type_declaration"
+      ],
+      "inputs": {
+        "feature_types": "reports/feature_types.csv",
+        "raw_data": "data/data.parquet",
+        "target_column": "CUST_TARGET_F"
+      },
+      "outputs": {
+        "processed_splits": "data/processed/{MODEL_TYPE}_{split}.parquet",
+        "processed_oot": "data/out_of_time/{MODEL_TYPE}_oot.parquet",
+        "null_cleaning_report": "reports/null_cleaning_report.csv",
+        "imputation_strategy": "reports/imputation_strategy.csv",
+        "benchmark_results": "reports/benchmark_results.csv",
+        "pipeline_config": "reports/pipeline_config.json",
+        "notebook": "notebooks/02_preprocess.ipynb",
+        "summary": "reports/summaries/preprocess_summary.json"
+      },
+      "validation": [
+        "reports/benchmark_results.csv exists",
+        "reports/pipeline_config.json exists",
+        "pipeline_config.approval_confirmed == true (set by the user in chat, never inside the notebook)",
+        "notebooks/02_preprocess.ipynb executed with errors=0",
+        "reports/summaries/preprocess_summary.json exists",
+        "data/out_of_time/{MODEL_TYPE}_oot.parquet exists for all 3 model types",
+        "pipeline_config.MODEL_TYPE in [catboost, lightgbm, xgboost] before next stage"
+      ]
+    },
+    "feature_selection": {
+      "agent": ".github/agents/FeatureSelection.agent.md",
+      "depends_on": [
+        "preprocess"
+      ],
+      "inputs": {
+        "pipeline_config": "reports/pipeline_config.json",
+        "feature_types": "reports/feature_types.csv",
+        "processed_train": "data/processed/{MODEL_TYPE}_train.parquet",
+        "processed_val": "data/processed/{MODEL_TYPE}_val.parquet"
+      },
+      "outputs": {
+        "feature_importance": "reports/checkpoints/fi_df.csv",
+        "selection_log": "reports/feature_selection_log.csv",
+        "selected_features": "reports/selected_features.csv",
+        "selection_auc_summary": "reports/selection_auc_summary.csv",
+        "notebook": "notebooks/03_feature_selection.ipynb",
+        "summary": "reports/summaries/feature_selection_summary.json"
+      },
+      "validation": [
+        "reports/selected_features.csv exists",
+        "reports/selection_auc_summary.csv exists",
+        "notebooks/03_feature_selection.ipynb executed with errors=0",
+        "reports/summaries/feature_selection_summary.json exists"
+      ]
+    },
+    "model_trainer": {
+      "agent": ".github/agents/ModelTrainer.agent.md",
+      "depends_on": [
+        "feature_selection"
+      ],
+      "inputs": {
+        "pipeline_config": "reports/pipeline_config.json",
+        "feature_types": "reports/feature_types.csv",
+        "selected_features": "reports/selected_features.csv",
+        "processed_train": "data/processed/{MODEL_TYPE}_train.parquet",
+        "processed_val": "data/processed/{MODEL_TYPE}_val.parquet",
+        "processed_test": "data/processed/{MODEL_TYPE}_test.parquet",
+        "processed_oot": "data/out_of_time/{MODEL_TYPE}_oot.parquet"
+      },
+      "outputs": {
+        "final_model": "models/{MODEL_TYPE}_final.{cbm|txt|json}",
+        "baseline_auc": "reports/baseline_auc.csv",
+        "best_params": "reports/best_params.json",
+        "final_metrics": "reports/final_model_metrics.json",
+        "decile_table": "reports/decile_table.csv",
+        "training_notebook": "notebooks/04_model_training.ipynb",
+        "pipeline_notebook": "notebooks/pipeline.ipynb",
+        "lift_table": "reports/lift_table.csv",
+        "lift_curve": "reports/figures/lift_curve.png",
+        "summary": "reports/summaries/model_trainer_summary.json",
+        "pipeline_summary": "reports/summaries/pipeline_summary.json"
+      },
+      "validation": [
+        "reports/final_model_metrics.json exists",
+        "models/{MODEL_TYPE}_final.* exists",
+        "notebooks/04_model_training.ipynb executed with errors=0",
+        "notebooks/pipeline.ipynb executed with errors=0",
+        "reports/summaries/model_trainer_summary.json exists",
+        "reports/summaries/pipeline_summary.json exists"
+      ]
+    }
+  }
+}

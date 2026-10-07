@@ -1,0 +1,15 @@
+# OS / local files
+.DS_Store
+/report (1).html
+
+# Pipeline outputs (may contain real data)
+data/
+reports/
+models/
+*.ipynb
+.ipynb_checkpoints/
+
+# Python environment
+env/
+__pycache__/
+*.pyc
