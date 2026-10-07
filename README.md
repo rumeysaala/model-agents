@@ -78,9 +78,6 @@ env/bin/pip install pandas numpy scikit-learn catboost lightgbm xgboost optuna s
 5. Set the connection constants in `.github/skills/sql-data-ingestion.md` and
    `.github/skills/optuna-sql-storage.md`.
 
-> The repository ships with placeholder values (`DUMMY-SQL-SRV01`, `DummyDatabase`, …).
-> Replace them with your own and **do not commit real server names or credentials.**
-
 ### Run
 
 In Copilot Chat, select the **Orchestrator** agent and ask it to run the pipeline. It will:
