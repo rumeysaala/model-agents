@@ -63,19 +63,8 @@ FeatureTypeDeclaration  →  Preprocess  →  FeatureSelection  →  ModelTraine
 ### Installation
 
 VS Code only finds the custom agents if the `.github/` folder sits at the **root of the folder
-you open in VS Code**. A plain `git clone` creates a `model-agents/` subfolder, so pick one of
-the options below.
-
-**Option A: start a new project from this repo**
-
-```bash
-git clone https://github.com/rumeysaala/model-agents.git my-project
-code my-project
-```
-
-**Option B: add the agents to an existing project**
-
-Copy only `.github/` and `pipeline_contracts.json` into your project root, without the git history:
+you open in VS Code**. A plain `git clone` creates a `model-agents/` subfolder, so copy only
+`.github/` and `pipeline_contracts.json` into your project root, without the git history:
 
 ```bash
 cd /opt/app-root/src            # your project root
@@ -123,6 +112,7 @@ In Copilot Chat, select the **Orchestrator** agent and ask it to run the pipelin
 
 While a stage is running, keep its `.ipynb` open in VS Code to see outputs appear cell by cell,
 or run `tail -f reports/logs/<stage>.log`.
+
 ## Generated Artifacts
 
 | Path | Content |
