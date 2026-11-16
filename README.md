@@ -52,7 +52,6 @@ FeatureTypeDeclaration  →  Preprocess  →  FeatureSelection  →  ModelTraine
 ```
 
 `.github/skills/CATALOG.md` lists every skill and the agents that use it.
-
 ## Getting Started
 
 ### Prerequisites
@@ -60,6 +59,38 @@ FeatureTypeDeclaration  →  Preprocess  →  FeatureSelection  →  ModelTraine
 - VS Code with GitHub Copilot (agent mode with custom agents enabled)
 - Python 3.10+ in a virtual environment at `env/`
 - SQL Server reachable through ODBC Driver 18. It serves as the data source and as Optuna storage.
+
+### Installation
+
+VS Code only finds the custom agents if the `.github/` folder sits at the **root of the folder
+you open in VS Code**. A plain `git clone` creates a `model-agents/` subfolder, so pick one of
+the options below.
+
+**Option A: start a new project from this repo**
+
+```bash
+git clone https://github.com/rumeysaala/model-agents.git my-project
+code my-project
+```
+
+**Option B: add the agents to an existing project**
+
+Copy only `.github/` and `pipeline_contracts.json` into your project root, without the git history:
+
+```bash
+cd /opt/app-root/src            # your project root
+git clone --depth 1 https://github.com/rumeysaala/model-agents.git /tmp/ma
+cp -r /tmp/ma/.github /tmp/ma/pipeline_contracts.json .
+rm -rf /tmp/ma
+```
+
+> If your project already has a `.github/` folder, `cp` will overwrite files with the same name.
+> Check for conflicts first.
+
+After installing, reload VS Code (`Developer: Reload Window`). The agents should then appear in
+the Copilot Chat agent picker.
+
+### Python Environment
 
 ```bash
 python -m venv env
@@ -69,7 +100,10 @@ env/bin/pip install pandas numpy scikit-learn catboost lightgbm xgboost optuna s
 
 ### Configuration
 
-1. Copy `pipeline_contracts.json` to `config/pipeline_contracts.json`, which is where the agents read it from.
+1. Copy `pipeline_contracts.json` to `config/pipeline_contracts.json`, which is where the agents read it from:
+   ```bash
+   mkdir -p config && cp pipeline_contracts.json config/
+   ```
 2. Set your data source in `stages.feature_type_declaration.inputs` (`sql_server`, `sql_database`,
    `sql_table`, `target_column`).
 3. List the PII / identifier columns in `excluded_columns.pii` and any known bad features in
@@ -89,7 +123,6 @@ In Copilot Chat, select the **Orchestrator** agent and ask it to run the pipelin
 
 While a stage is running, keep its `.ipynb` open in VS Code to see outputs appear cell by cell,
 or run `tail -f reports/logs/<stage>.log`.
-
 ## Generated Artifacts
 
 | Path | Content |
