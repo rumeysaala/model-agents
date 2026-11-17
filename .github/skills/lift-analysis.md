@@ -1,6 +1,6 @@
 ---
 name: lift-analysis
-description: computes decile-based lift table and cumulative gains plot on the test set, saves reports/decile_table.csv and reports/figures/lift_curve.png
+description: computes decile-based lift table and cumulative gains plot on the test set, saves reports/lift_table.csv and reports/figures/lift_curve.png
 ---
 
 ```python
@@ -87,7 +87,7 @@ if top10_lift < 1.5:
 
 # ── Save ──────────────────────────────────────────────────────────────────────
 Path('reports/figures').mkdir(parents=True, exist_ok=True)
-lift_table.to_csv('reports/decile_table.csv', index=False)
+lift_table.to_csv('reports/lift_table.csv', index=False)
 fig_lift.savefig('reports/figures/lift_curve.png', dpi=150, bbox_inches='tight')
 plt.show()
 ```
@@ -96,5 +96,5 @@ plt.show()
 
 | File | Columns |
 |---|---|
-| `reports/decile_table.csv` | `DECILE`, `population`, `bad_count`, `bad_rate`, `pop_share`, `bad_share`, `lift`, `cum_population`, `cum_population_share`, `cum_bad_count`, `cum_bad_share`, `cum_lift`, `avg_proba` |
+| `reports/lift_table.csv` | `DECILE`, `population`, `bad_count`, `bad_rate`, `pop_share`, `bad_share`, `lift`, `cum_population`, `cum_population_share`, `cum_bad_count`, `cum_bad_share`, `cum_lift`, `avg_proba` |
 | `reports/figures/lift_curve.png` | Cumulative gains plot |
