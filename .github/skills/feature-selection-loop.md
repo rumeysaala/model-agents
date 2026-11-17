@@ -11,12 +11,15 @@ with open("reports/pipeline_config.json", "r") as f:
     _cfg = json.load(f)
 MODEL_TYPE = _cfg["MODEL_TYPE"]
 
+# --- Imbalance- and size-aware defaults computed by Preprocess (data-profile.md) ---
+profile, defaults, cv_plan = load_profile()
+
 # --- Constants ---
 THRESHOLD        = 0.003   # max AUC drop (backward) / min AUC gain (forward)
 SAMPLE_FRAC      = 0.35    # val sample fraction per trial
 FS_ITERATIONS    = 20      # fast model iterations per trial
 TOP_BASE         = 100     # start selection from top-N features by importance
-TOP_N            = 60      # bottom-N of top-80 tested in backward pass
+TOP_N            = 60      # bottom-N of the TOP_BASE set tested in backward pass
 MAX_FORWARD      = 5       # max candidates tested in forward pass
 NO_IMPROVE_LIMIT = 2       # forward stops after N consecutive misses
 
@@ -25,19 +28,20 @@ fast_params   = {iter_key: FS_ITERATIONS}
 X_val_sample  = X_val.sample(frac=SAMPLE_FRAC, random_state=42)
 y_val_sample  = y_val.loc[X_val_sample.index]
 
-# Start from top-80 features ranked by combined importance
+# Start from top-TOP_BASE features ranked by combined importance
 _top_features = fi_df.sort_values("shap_importance", ascending=False).head(TOP_BASE)["feature"].tolist()
 selected      = [f for f in _top_features if f in X_train.columns]
 removed       = []
 log           = []  # columns: step, direction, feature, baseline_auc, trial_auc, delta, decision
 
-# Compute baseline AUC on top-80 subset
+# Compute baseline AUC on top-TOP_BASE subset
 _cats = [c for c in cat_cols if c in selected]
 _base_model = build_model(MODEL_TYPE, _cats, X_train[selected], y_train,
-                          X_val=X_val_sample[selected], y_val=y_val_sample, params=fast_params)
+                          X_val=X_val_sample[selected], y_val=y_val_sample, params=fast_params,
+                          defaults=defaults)
 baseline_auc = get_val_auc(_base_model, MODEL_TYPE, X_val_sample[selected], y_val_sample, _cats)
 
-# --- Backward pass: remove least important features from the top-80 set ---
+# --- Backward pass: remove least important features from the top-TOP_BASE set ---
 candidates = fi_df[fi_df["feature"].isin(selected)] \
                .sort_values("shap_importance", ascending=True).head(TOP_N)["feature"].tolist()
 
@@ -47,7 +51,8 @@ for feat in candidates:
     trial_cols = [c for c in selected if c != feat]
     _cats_t = [c for c in cat_cols if c in trial_cols]
     m = build_model(MODEL_TYPE, _cats_t, X_train[trial_cols], y_train,
-                    X_val=X_val_sample[trial_cols], y_val=y_val_sample, params=fast_params)
+                    X_val=X_val_sample[trial_cols], y_val=y_val_sample, params=fast_params,
+                    defaults=defaults)
     trial_auc = get_val_auc(m, MODEL_TYPE, X_val_sample[trial_cols], y_val_sample, _cats_t)
     delta = trial_auc - baseline_auc
     # Remove if AUC drop is within threshold
@@ -73,7 +78,8 @@ for feat in forward_candidates:
     trial_cols = selected + [feat]
     _cats_t = [c for c in cat_cols if c in trial_cols]
     m = build_model(MODEL_TYPE, _cats_t, X_train[trial_cols], y_train,
-                    X_val=X_val_sample[trial_cols], y_val=y_val_sample, params=fast_params)
+                    X_val=X_val_sample[trial_cols], y_val=y_val_sample, params=fast_params,
+                    defaults=defaults)
     trial_auc = get_val_auc(m, MODEL_TYPE, X_val_sample[trial_cols], y_val_sample, _cats_t)
     delta = trial_auc - baseline_auc
     # Add back only if AUC gain exceeds threshold

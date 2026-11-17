@@ -2,7 +2,7 @@
 description: "Pulls raw data from SQL in chunks and saves data/data.parquet (if not already present), then declares feature types (NUMERIC, ORDINAL, NOMINAL, BOOLEAN) and saves reports/feature_types.csv. This is the first step of the pipeline."
 config_ref: "feature_type_declaration"
 contracts_file: "config/pipeline_contracts.json"
-tools: ["edit/editFiles", "read/readFile", "read/getNotebookSummary", "read/readNotebookCellOutput", "execute/getTerminalOutput", "read/terminalLastCommand", "execute/runInTerminal", "search/codebase"]
+tools: ["edit/editFiles", "read/readFile", "read/getNotebookSummary", "read/readNotebookCellOutput", "edit/editNotebook", "execute/runNotebookCell", "execute/getTerminalOutput", "read/terminalLastCommand", "execute/runInTerminal", "search/codebase"]
 model: "Claude Sonnet 5"
 ---
 
@@ -36,7 +36,7 @@ Load constants from `config/pipeline_contracts.json` as specified in #file:../sk
 
    > `ORDINAL` features are low-cardinality ordered numeric columns; they are handled separately during modeling.
 3. Apply high-correlation exclusion on active numeric features :
-   - Consider only non-excluded numeric columns and skip target column.
+   - Consider only non-excluded numeric columns and skip target column; if `is_fraud`: training periods only (no val/test) — see skill.
    - For each highly correlated pair (|r| >= threshold), exclude the one with lower absolute correlation to target.
    - Mark excluded columns with:
      - excluded = True
@@ -90,25 +90,7 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 - SQL connection parameters are defined in `#file:../skills/sql-data-ingestion.md` — do not hardcode them elsewhere
 - Follow `random_state=42`, `encoding="ISO-8859-9"` standards
 - Each cell should have a single responsibility
-- Follow #file:../skills/notebook-execution.md — no cell-by-cell execution, no cell-output reading
-
-## Execution & Token Policy
-
-Follow #file:../skills/notebook-execution.md exactly — write the notebook **once** as a jupytext
-percent source, execute it **once** with papermill, read **only** the summary JSON.
-
-| Notebook | Source (write once) | Deliverable (executed, outputs embedded) | Log | Summary (the only result you read) | Analysis cell |
-|---|---|---|---|---|---|
-| `01_feature_type_declaration` | `notebooks/src/01_feature_type_declaration.py` | `notebooks/01_feature_type_declaration.ipynb` | `reports/logs/01_feature_type_declaration.log` | `reports/summaries/feature_type_declaration_summary.json` | `reports/summaries/feature_type_declaration_analysis.md` |
-
-- Before starting, tell the user they can keep the `.ipynb` open in VS Code and watch outputs
-  appear cell by cell (papermill saves after every cell), or `tail -f` the log.
-- Never run cells one by one; never open the executed `.ipynb`; at most 2 `readNotebookCellOutput`
-  calls per notebook, and only if the summary is insufficient.
-- The last code cell calls `write_stage_summary(...)` with the fields listed in
-  #file:../skills/stage-summary.md
-- After a successful run: read the summary, write the analysis markdown (≤ 15 lines, for the
-  data scientist), append it, run the verify check (§6 of the execution skill).
+- First code cell: `import os, sys; from pathlib import Path; PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd(); os.chdir(PROJECT_ROOT); sys.path.insert(0, str(PROJECT_ROOT))` — all paths relative to the workspace root, never search for files.
 
 ## Execution Order
 

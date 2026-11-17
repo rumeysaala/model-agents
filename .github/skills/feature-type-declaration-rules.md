@@ -19,6 +19,10 @@ Read these values from contracts:
 PII_COLS = contracts["excluded_columns"]["pii"]
 BAD_FEATURES_USER = contracts["excluded_columns"]["bad_features"]
 TARGET_COL = contracts["stages"]["feature_type_declaration"]["inputs"]["target_column"]
+PERIOD_COL = (contracts.get("temporal_split") or {}).get("period_column")   # user-defined name; never a feature
+if not PERIOD_COL:
+    raise ValueError("temporal_split.period_column is required: set it in config/pipeline_contracts.json "
+                     "to the period column of your data (e.g. DONEM or PERIOD_ORDER). There is no default.")
 HIGH_UNIQUE_THRESHOLD = 0.90
 ```
 
@@ -36,8 +40,10 @@ df[col].nunique(dropna=True) / max(len(df), 1) >= HIGH_UNIQUE_THRESHOLD
 5. Merge bad features:
 
 ```python
+if PERIOD_COL not in df.columns:
+    raise KeyError(f"temporal_split.period_column='{PERIOD_COL}' is not a column of the data")
 BAD_FEATURES = sorted(set(BAD_FEATURES_USER) | set(DATE_COLS_AUTO) | set(ID_COLS_AUTO) | set(HIGH_UNIQUE_COLS_AUTO))
-EXCLUDE_ALL = set(PII_COLS + BAD_FEATURES)
+EXCLUDE_ALL = set(PII_COLS + BAD_FEATURES + [PERIOD_COL])
 ```
 
 ## Exclude Reason Priority
@@ -46,6 +52,7 @@ Assign `exclude_reason` with this order:
 
 1. `PII`
 2. `target`
+2b. `period_column` (the `temporal_split.period_column` column, even if not listed in `pii`)
 3. `bad_feature_user`
 4. `bad_feature_date`
 5. `bad_feature_id`

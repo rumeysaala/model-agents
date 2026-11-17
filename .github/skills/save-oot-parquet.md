@@ -8,7 +8,7 @@ Save out-of-time (OOT) test data with CONTACT identifier columns + preprocessed 
 ## Rules
 
 - Read from `data/processed/_raw_test.parquet`
-- Include CONTACT columns: `['CUST_NO', 'TRAN_DATE', 'DONEM', 'PERIOD_ORDER']`
+- Include CONTACT columns: `['CUST_NO', 'TRAN_DATE', 'DONEM', 'PERIOD_ORDER']` + the split period column from `temporal_split.period_column` (contracts) if not already listed
 - Apply the **same** encoding and imputation logic as the model splits (fit on train, transform test)
 - Process ALL 3 model types: `catboost`, `lightgbm`, `xgboost`
 - Save to `data/out_of_time/{model_type}_oot.parquet`
@@ -22,7 +22,7 @@ import pandas as pd
 from sklearn.preprocessing import OrdinalEncoder
 from sklearn.impute import SimpleImputer
 
-CONTACT = ['CUST_NO', 'TRAN_DATE', 'DONEM', 'PERIOD_ORDER']
+CONTACT = list(dict.fromkeys(['CUST_NO', 'TRAN_DATE', 'DONEM', 'PERIOD_ORDER', period_column]))  # period_column from temporal-data-split
 OOT_DIR = "data/out_of_time"
 os.makedirs(OOT_DIR, exist_ok=True)
 

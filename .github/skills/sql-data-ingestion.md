@@ -15,7 +15,7 @@ CHUNK_SIZE  = 50_000
 OUTPUT_PATH = "data/data.parquet"
 
 conn_str = (
-    f"mssql+pyodbc://{SERVER}{DATABASE}"
+    f"mssql+pyodbc://{SERVER}/{DATABASE}"
     "?TrustServerCertificate=yes&driver=ODBC Driver 18 for SQL Server"
 )
 engine = create_engine(conn_str, fast_executemany=True)

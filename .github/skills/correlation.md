@@ -63,8 +63,20 @@ candidates = [c for c in numeric_cols if c not in already_excluded and c != TARG
 to_exclude_high_corr = set()
 corr_pairs = []  # collect correlated pairs info
 
+# Fraud: target-based decisions use training periods only (val + test held out); otherwise all rows
+import json, os
+_ts = contracts["temporal_split"]
+_cfg_path = "reports/pipeline_config.json"
+_is_fraud = os.path.exists(_cfg_path) and bool(json.load(open(_cfg_path)).get("is_fraud", False))
+if _is_fraud:
+    _period = df[_ts["period_column"]].astype(str).str.replace(r"\.0$", "", regex=True)
+    df_corr = df[~_period.isin(_ts["test_periods"] + _ts["val_periods"])]
+else:
+    df_corr = df
+print(f"Correlation rows: {len(df_corr):,} / {len(df):,}")
+
 if HIGH_CORR_EXCLUSION_ENABLED and TARGET_COL in df.columns and pd.api.types.is_numeric_dtype(df[TARGET_COL]):
-    sample_df = df[candidates + [TARGET_COL]].sample(n=min(SAMPLE_SIZE, len(df)), random_state=42)
+    sample_df = df_corr[candidates + [TARGET_COL]].sample(n=min(SAMPLE_SIZE, len(df_corr)), random_state=42)
     target_corr_abs = sample_df[candidates].corrwith(sample_df[TARGET_COL]).abs()
     corr_matrix = sample_df[candidates].corr()
 
@@ -79,7 +91,7 @@ if HIGH_CORR_EXCLUSION_ENABLED and TARGET_COL in df.columns and pd.api.types.is_
 
             r = corr_matrix.iloc[i, j]
             if pd.notna(r) and abs(r) >= HIGH_CORR_THRESHOLD:
-                pair_count = df[[c1, c2]].dropna().shape[0]
+                pair_count = df_corr[[c1, c2]].dropna().shape[0]
                 if pair_count < HIGH_CORR_MIN_PAIRS:
                     continue
 
