@@ -2,8 +2,10 @@
   "version": "1.0",
   "runtime": {
     "python": "env/bin/python",
+    "notebook_source_dir": "notebooks/src",
     "logs_dir": "reports/logs",
-    "summaries_dir": "reports/summaries"
+    "summaries_dir": "reports/summaries",
+    "execution_policy": ".github/skills/notebook-execution.md"
   },
   "excluded_columns": {
     "pii": [
@@ -11,11 +13,14 @@
       "CUST_TRAN_DATE",
       "PERIOD_ORDER",
       "BUSINESS_LINE",
-      "PARTITION_KEY"
+      "PARTITION_KEY",
+      "CUST_TARGET_F"
     ],
     "bad_features": [
       "FOLLOW_CODE_L3M"
-    ]
+    ],
+    "leakage": [],
+    "leakage_reviewed": []
   },
   "temporal_split": {
     "period_column": "DONEM",
@@ -29,10 +34,6 @@
       "202601",
       "202602"
     ]
-  },
-  "model_training": {
-    "_comment": "Adaptive values (leaf size, depth, num_leaves, colsample, scale_pos_weight, CV folds) are computed from the data at runtime (.github/skills/data-profile.md). Put a key in overrides only to force a value; see reports/data_profile.json for valid keys.",
-    "overrides": {}
   },
   "execution_order": [
     "feature_type_declaration",
@@ -54,11 +55,14 @@
         "feature_types": "reports/feature_types.csv",
         "high_corr_pairs": "reports/high_corr_pairs.csv",
         "notebook": "notebooks/01_feature_type_declaration.ipynb",
-        "summary": "reports/summaries/feature_type_declaration_summary.json"
+        "summary": "reports/summaries/feature_type_declaration_summary.json",
+        "data_audit": "reports/data_audit.csv",
+        "leakage_audit": "reports/leakage_audit.csv"
       },
       "validation": [
         "data/data.parquet exists",
         "reports/feature_types.csv exists",
+        "reports/data_audit.csv and reports/leakage_audit.csv exist",
         "notebooks/01_feature_type_declaration.ipynb executed with errors=0",
         "reports/summaries/feature_type_declaration_summary.json exists"
       ]
@@ -75,26 +79,25 @@
       },
       "outputs": {
         "processed_splits": "data/processed/{MODEL_TYPE}_{split}.parquet",
-        "processed_oot": "data/out_of_time/{MODEL_TYPE}_oot.parquet",
         "null_cleaning_report": "reports/null_cleaning_report.csv",
         "imputation_strategy": "reports/imputation_strategy.csv",
         "benchmark_results": "reports/benchmark_results.csv",
         "pipeline_config": "reports/pipeline_config.json",
         "notebook": "notebooks/02_preprocess.ipynb",
         "summary": "reports/summaries/preprocess_summary.json",
-        "processed_periods": "data/processed/_periods_{split}.parquet",
+        "processed_oot": "data/out_of_time/oot_raw.parquet",
+        "val_eval_plan": "data/processed/_val_eval_idx.parquet",
         "data_profile": "reports/data_profile.json"
       },
       "validation": [
         "reports/benchmark_results.csv exists",
         "reports/pipeline_config.json exists",
-        "reports/data_profile.json exists",
         "pipeline_config.approval_confirmed == true (set by the user in chat, never inside the notebook)",
         "notebooks/02_preprocess.ipynb executed with errors=0",
         "reports/summaries/preprocess_summary.json exists",
-        "data/out_of_time/{MODEL_TYPE}_oot.parquet exists for all 3 model types",
         "pipeline_config.MODEL_TYPE in [catboost, lightgbm, xgboost] before next stage",
-        "pipeline_config.MODEL_TYPE_challenger is null or a model type different from MODEL_TYPE"
+        "data/out_of_time/oot_raw.parquet exists",
+        "data/processed/_val_eval_idx.parquet exists"
       ]
     },
     "feature_selection": {
@@ -107,7 +110,7 @@
         "feature_types": "reports/feature_types.csv",
         "processed_train": "data/processed/{MODEL_TYPE}_train.parquet",
         "processed_val": "data/processed/{MODEL_TYPE}_val.parquet",
-        "data_profile": "reports/data_profile.json"
+        "val_eval_plan": "data/processed/_val_eval_idx.parquet"
       },
       "outputs": {
         "feature_importance": "reports/checkpoints/fi_df.csv",
@@ -115,7 +118,8 @@
         "selected_features": "reports/selected_features.csv",
         "selection_auc_summary": "reports/selection_auc_summary.csv",
         "notebook": "notebooks/03_feature_selection.ipynb",
-        "summary": "reports/summaries/feature_selection_summary.json"
+        "summary": "reports/summaries/feature_selection_summary.json",
+        "challenger_check": "reports/selection_challenger_check.csv"
       },
       "validation": [
         "reports/selected_features.csv exists",
@@ -135,38 +139,77 @@
         "selected_features": "reports/selected_features.csv",
         "processed_train": "data/processed/{MODEL_TYPE}_train.parquet",
         "processed_val": "data/processed/{MODEL_TYPE}_val.parquet",
-        "processed_test": "data/processed/{MODEL_TYPE}_test.parquet",
-        "processed_oot": "data/out_of_time/{MODEL_TYPE}_oot.parquet",
-        "processed_periods": "data/processed/_periods_{split}.parquet",
-        "data_profile": "reports/data_profile.json"
+        "raw_data": "data/data.parquet"
       },
       "outputs": {
-        "final_model": "models/{MODEL_TYPE}_final.{cbm|txt|json}",
         "baseline_auc": "reports/baseline_auc.csv",
         "best_params": "reports/best_params.json",
-        "final_metrics": "reports/final_model_metrics.json",
-        "decision_threshold": "reports/decision_threshold.json",
-        "final_estimator": "models/{MODEL_TYPE}_final_estimator.pkl",
-        "decile_table": "reports/decile_table.csv",
+        "search_space": "reports/search_space.json",
+        "oof_predictions": "reports/oof_predictions.parquet",
+        "calibration": "reports/calibration.json",
+        "calibrator": "models/{MODEL_TYPE}_calibrator.pkl (only if applied)",
         "training_notebook": "notebooks/04_model_training.ipynb",
-        "pipeline_notebook": "notebooks/pipeline.ipynb",
+        "summary": "reports/summaries/model_trainer_summary.json",
+        "pipeline": "models/{MODEL_TYPE}_pipeline_final.pkl",
+        "final_model": "models/{MODEL_TYPE}_final.{cbm|txt|json}",
+        "freeze_manifest": "models/freeze_manifest.json",
+        "final_metrics": "reports/final_model_metrics.json",
+        "decile_table": "reports/decile_table.csv",
         "lift_table": "reports/lift_table.csv",
         "lift_curve": "reports/figures/lift_curve.png",
-        "summary": "reports/summaries/model_trainer_summary.json",
-        "pipeline_summary": "reports/summaries/pipeline_summary.json",
-        "search_space": "reports/search_space.json",
-        "model_selection": "reports/model_selection.json"
+        "oot_topk": "reports/oot_topk.csv",
+        "oot_monthly": "reports/oot_monthly.csv",
+        "calibration_curve": "reports/figures/calibration_curve.png",
+        "deployment_gate": "reports/deployment_gate.json",
+        "pipeline_notebook": "notebooks/pipeline.ipynb",
+        "pipeline_summary": "reports/summaries/pipeline_summary.json"
       },
       "validation": [
-        "reports/final_model_metrics.json exists",
-        "reports/decision_threshold.json exists",
-        "reports/model_selection.json exists",
-        "models/{MODEL_TYPE}_final.* exists",
+        "reports/best_params.json and reports/calibration.json exist",
         "notebooks/04_model_training.ipynb executed with errors=0",
+        "models/{MODEL_TYPE}_pipeline_final.pkl and models/freeze_manifest.json exist",
+        "reports/deployment_gate.json exists with decision in [PASS, REVIEW REQUIRED, BLOCKED]",
         "notebooks/pipeline.ipynb executed with errors=0",
-        "reports/summaries/model_trainer_summary.json exists",
-        "reports/summaries/pipeline_summary.json exists"
+        "reports/summaries/model_trainer_summary.json and reports/summaries/pipeline_summary.json exist"
       ]
     }
+  },
+  "audit": {
+    "key_columns": [
+      "CUST_NO",
+      "DONEM"
+    ],
+    "single_feature_auc_max": 0.9,
+    "event_rate_z": 3.0,
+    "null_rate_jump": 0.3
+  },
+  "preprocessing": {
+    "impute_numeric": {
+      "catboost": null,
+      "lightgbm": null,
+      "xgboost": null
+    }
+  },
+  "validation_eval": {
+    "max_rows_per_period": 200000,
+    "min_pos_per_period": 10,
+    "bootstrap_n": 1000
+  },
+  "model_training": {
+    "overrides": {}
+  },
+  "optuna": {
+    "storage": "sqlite:///reports/optuna_study.db",
+    "n_trials": 50,
+    "timeout_sec": 3600
+  },
+  "deployment_gate": {
+    "min_test_auc": 0.7,
+    "min_test_auc_ci_low": 0.68,
+    "warn_val_test_auc_drop": 0.03,
+    "fail_val_test_auc_drop": 0.06,
+    "warn_worst_month_auc": 0.65,
+    "warn_abs_calibration_in_large": 0.2,
+    "fail_abs_calibration_in_large": 0.5
   }
 }

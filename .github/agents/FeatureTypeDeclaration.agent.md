@@ -2,7 +2,7 @@
 description: "Pulls raw data from SQL in chunks and saves data/data.parquet (if not already present), then declares feature types (NUMERIC, ORDINAL, NOMINAL, BOOLEAN) and saves reports/feature_types.csv. This is the first step of the pipeline."
 config_ref: "feature_type_declaration"
 contracts_file: "config/pipeline_contracts.json"
-tools: ["edit/editFiles", "read/readFile", "read/getNotebookSummary", "read/readNotebookCellOutput", "edit/editNotebook", "execute/runNotebookCell", "execute/getTerminalOutput", "read/terminalLastCommand", "execute/runInTerminal", "search/codebase"]
+tools: ["edit/editFiles", "read/readFile", "read/getNotebookSummary", "read/readNotebookCellOutput", "execute/getTerminalOutput", "read/terminalLastCommand", "execute/runInTerminal", "search/codebase"]
 model: "Claude Sonnet 5"
 ---
 
@@ -36,7 +36,7 @@ Load constants from `config/pipeline_contracts.json` as specified in #file:../sk
 
    > `ORDINAL` features are low-cardinality ordered numeric columns; they are handled separately during modeling.
 3. Apply high-correlation exclusion on active numeric features :
-   - Consider only non-excluded numeric columns and skip target column; if `is_fraud`: training periods only (no val/test) — see skill.
+   - Consider only non-excluded numeric columns and skip target column.
    - For each highly correlated pair (|r| >= threshold), exclude the one with lower absolute correlation to target.
    - Mark excluded columns with:
      - excluded = True
@@ -45,7 +45,9 @@ Load constants from `config/pipeline_contracts.json` as specified in #file:../sk
    Follow the logic in #file:../skills/correlation.md
 
 
-4. Build the exclusion list and apply `excluded=True` with `exclude_reason` by following `#file:../skills/feature-type-declaration-rules.md`
+4. Build the exclusion list and apply `excluded=True` with `exclude_reason` by following `#file:../skills/feature-type-declaration-rules.md` (includes `excluded_columns.leakage` → `leakage_user`)
+
+4b. **Data & leakage audit** — follow #file:../skills/data-audit.md (uses Block A of #file:../skills/temporal-data-split.md): monthly rows / positives / negatives / event rate per split, duplicate keys, target checks → `reports/data_audit.csv`; leakage suspects → `reports/leakage_audit.csv`. Report only — never exclude a suspect yourself.
 
 5. - Save the result as `reports/feature_types.csv`. Schema:
 
@@ -71,6 +73,7 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 - Auto bad feature derivation and final exclusion list build (follow `#file:../skills/feature-type-declaration-rules.md`)
 - Type determination logic and `feature_types_df` creation
 - Save `reports/feature_types.csv` and `reports/high_corr_pairs.csv`
+- Data & leakage audit → `reports/data_audit.csv`, `reports/leakage_audit.csv` (#file:../skills/data-audit.md)
 - Stage summary → `reports/summaries/feature_type_declaration_summary.json` (#file:../skills/stage-summary.md)
 - Markdown analysis — appended **after** execution from the summary: type distribution, excluded feature count and reasons, suspicious ORDINAL/BOOLEAN calls the user should check
 
@@ -81,16 +84,23 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 | `data/data.parquet` | Raw data pulled from SQL (produced only if not already present) |
 | `reports/feature_types.csv` | Feature type list (input for subsequent agents) |
 | `reports/high_corr_pairs.csv` | Highly correlated pairs and which one was dropped |
+| `reports/data_audit.csv` | Split × period rows / positives / negatives / event rate (+ flag) |
+| `reports/leakage_audit.csv` | Leakage suspects for the user's Gate 1 decision |
 | `reports/summaries/feature_type_declaration_summary.json` | Stage summary (read by agent + Orchestrator gate) |
 
 ## Constraints
 
 - Do NOT log or report PII columns in raw form
-- Do NOT perform modeling — only define types and save
+- Do NOT perform modeling — only define types, audit and save
+- Do NOT exclude leakage suspects automatically; only the user moves them to `excluded_columns.leakage` / `leakage_reviewed`
 - SQL connection parameters are defined in `#file:../skills/sql-data-ingestion.md` — do not hardcode them elsewhere
 - Follow `random_state=42`, `encoding="ISO-8859-9"` standards
 - Each cell should have a single responsibility
-- First code cell: `import os, sys; from pathlib import Path; PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd(); os.chdir(PROJECT_ROOT); sys.path.insert(0, str(PROJECT_ROOT))` — all paths relative to the workspace root, never search for files.
+
+## Execution & Token Policy
+
+Follow #file:../skills/notebook-execution.md — write `notebooks/01_feature_type_declaration.ipynb` directly, run all cells with the
+VS Code notebook tools, read only `reports/summaries/feature_type_declaration_summary.json`, append the analysis cell, run the verify check.
 
 ## Execution Order
 

@@ -1,120 +1,83 @@
 ---
 name: benchmark-models
-description: compares all 3 models on the same temporal-CV folds as HPO (row-capped fold train sets, early stopping), ranks them by the selection metric with the practical improvement criterion, and proposes a champion + optional challenger
+description: fits all 3 model families on the full train with the same features, params and iteration budget, scores them on the fixed validation months, and proposes one Champion with a pre-declared rule
 ---
 
-Requires `profile`, `cv_plan`, `overrides` from the data-profile cell (`data-profile.md`) — every
-benchmark model gets imbalance-aware (`scale_pos_weight`) and size-aware defaults.
-`cv_score`, `compare`, `selection_metric`, `make_fold_indices`, `load_periods` come from `temporal-cv.md`.
-
-Folds are the ones ModelTrainer HPO uses (train+val; fraud: train only, val untouched). Only the
-fold **train** rows are capped (stratified, seed 42); val blocks are scored in full. Runtime is
-not part of the selection.
+Rules
+- Full train, common starting feature set, same adaptive defaults, same iteration budget,
+  **no early stopping on val** (val stays a pure evaluation set).
+- Metrics are kept unrounded: mean / std / worst of per-month val AUCs (`val_eval`), pooled val AUC,
+  train AUC, train–val gap; PR-AUC, KS, Brier are informational.
+- Champion rule (fixed before looking at results):
+  1. leader = highest mean val AUC;
+  2. a model is *close* when the paired-bootstrap 95% CI of (leader − model) mean-month AUC includes 0;
+  3. one candidate → leader; several → lowest rank-sum over (std ↑, worst-month ↓, gap ↑),
+     ties broken by mean val AUC.
+- Needs: model-factory.md Blocks 1–2, `defaults` / `val_plan` from the profile step, `USE_GPU`.
 
 ```python
-import json
-import numpy as np, pandas as pd
+from scipy.stats import ks_2samp
+from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
+import time
 
-PROCESSED_DIR            = "data/processed"
-BENCHMARK_MAX_TRAIN_ROWS = 300_000
-BENCHMARK_ITERATIONS     = 1000      # upper bound — early stopping on the fold val block
-BENCHMARK_LEARNING_RATE  = 0.1
+PROCESSED_DIR = "data/processed"
+BOOTSTRAP_N   = int((contracts.get("validation_eval") or {}).get("bootstrap_n", 1000))
+bench_defaults = add_feature_dependent(defaults, len(active_features), overrides)
 
-IS_FRAUD = is_fraud()                                                   # temporal-cv.md
-USE_GPU  = bool(json.load(open("reports/pipeline_config.json")).get("use_gpu", False))
-METRIC   = selection_metric()                                           # pr_auc (fraud) | roc_auc
-CV_SPLITS = ["train"] if IS_FRAUD else ["train", "val"]
-assert cv_plan["holdout_val"] == IS_FRAUD
+bench_rows, bench_eval = [], {}
+for mt in ["catboost", "lightgbm", "xgboost"]:
+    X_tr = pd.read_parquet(f"{PROCESSED_DIR}/{mt}_train.parquet"); y_tr = X_tr.pop(TARGET_COL)
+    X_vl = pd.read_parquet(f"{PROCESSED_DIR}/{mt}_val.parquet");   y_vl = X_vl.pop(TARGET_COL)
+    b_cat = cat_cols_in_df if mt in ("catboost", "lightgbm") else []
+    t0 = time.time()
+    model = build_model(mt, b_cat, X_tr, y_tr, params={"use_gpu": USE_GPU}, defaults=bench_defaults)
+    t_train = time.time() - t0
+    ev = val_eval(model, mt, X_vl, y_vl, b_cat, val_plan)
+    train_auc = get_val_auc(model, mt, X_tr, y_tr, b_cat)
+    p, y = ev["preds"], ev["y"]
+    bench_eval[mt] = ev
+    bench_rows.append({"model_type": mt, "mean_val_auc": ev["mean_auc"], "std_month_auc": ev["std_auc"],
+                       "worst_month_auc": ev["worst_auc"], "pooled_val_auc": ev["pooled_auc"],
+                       "train_auc": train_auc, "gap": train_auc - ev["mean_auc"],
+                       "pr_auc": float(average_precision_score(y, p)),
+                       "ks": float(ks_2samp(p[y == 1], p[y == 0]).statistic),
+                       "brier": float(brier_score_loss(y, p)), "train_time_sec": round(t_train, 2),
+                       **{f"auc_{k}": v for k, v in ev["month_aucs"].items()}})
+    print(f"{mt}: mean_val_auc={ev['mean_auc']:.6f} std={ev['std_auc']:.6f} worst={ev['worst_auc']:.6f} gap={train_auc - ev['mean_auc']:.6f}")
 
-def load_cv(model_type: str) -> tuple[pd.DataFrame, pd.Series]:
-    X = pd.concat([pd.read_parquet(f"{PROCESSED_DIR}/{model_type}_{s}.parquet") for s in CV_SPLITS],
-                  ignore_index=True)
-    return X, X.pop("TARGET_F")
+def paired_bootstrap_ci(p_a, p_b, y, period, n=BOOTSTRAP_N, seed=42):
+    """95% CI of mean-month AUC(a) − AUC(b), resampling rows within each month."""
+    rng, groups, diffs = np.random.default_rng(seed), [np.flatnonzero(period == k) for k in pd.unique(period)], []
+    for _ in range(n):
+        da, db = [], []
+        for g in groups:
+            s = rng.choice(g, len(g), replace=True)
+            if y[s].min() != y[s].max():
+                da.append(roc_auc_score(y[s], p_a[s])); db.append(roc_auc_score(y[s], p_b[s]))
+        diffs.append(np.mean(da) - np.mean(db))
+    return np.percentile(diffs, [2.5, 97.5])
 
-def cap_rows(idx: np.ndarray, y: pd.Series, cap: int, seed: int = 42) -> np.ndarray:
-    """Stratified row cap: keeps the event rate of `idx`."""
-    if len(idx) <= cap:
-        return idx
-    rng, yv = np.random.default_rng(seed), y.to_numpy()[idx]
-    parts = [rng.choice(idx[yv == c], int(round(cap * (yv == c).mean())), replace=False)
-             for c in (0, 1) if (yv == c).any()]
-    return np.sort(np.concatenate(parts))
+benchmark_df = pd.DataFrame(bench_rows).sort_values("mean_val_auc", ascending=False).reset_index(drop=True)
+leader = benchmark_df.loc[0, "model_type"]
+ref = bench_eval[leader]
+cis = {mt: (paired_bootstrap_ci(ref["preds"], bench_eval[mt]["preds"], ref["y"], ref["period"])
+            if mt != leader else np.array([0.0, 0.0])) for mt in benchmark_df["model_type"]}
+benchmark_df["diff_ci_low"]  = benchmark_df["model_type"].map(lambda m: float(cis[m][0]))
+benchmark_df["diff_ci_high"] = benchmark_df["model_type"].map(lambda m: float(cis[m][1]))
+benchmark_df["close_to_leader"] = benchmark_df["diff_ci_low"] <= 0
 
-# Folds are identical for every model type (same rows, periods, target)
-y_ref      = pd.concat([pd.read_parquet(f"{PROCESSED_DIR}/catboost_{s}.parquet", columns=["TARGET_F"])
-                        for s in CV_SPLITS], ignore_index=True)["TARGET_F"]
-periods_cv = pd.concat([load_periods(s) for s in CV_SPLITS], ignore_index=True)
-assert len(periods_cv) == len(y_ref), "period labels / CV rows misaligned"
-fold_idx   = [(cap_rows(tr, y_ref, BENCHMARK_MAX_TRAIN_ROWS), va)
-              for tr, va in make_fold_indices(cv_plan, periods_cv, y_ref)]
+cand = benchmark_df[benchmark_df["close_to_leader"]].copy()
+cand["rank_sum"] = (cand["std_month_auc"].rank() + cand["worst_month_auc"].rank(ascending=False)
+                    + cand["gap"].rank())
+benchmark_df["rank_sum"] = benchmark_df["model_type"].map(cand.set_index("model_type")["rank_sum"])
+MODEL_TYPE = cand.sort_values(["rank_sum", "mean_val_auc"], ascending=[True, False]).iloc[0]["model_type"]
+benchmark_df["champion"] = benchmark_df["model_type"] == MODEL_TYPE
+CHAMPION_RATIONALE = (f"{MODEL_TYPE}: highest mean val AUC, others significantly lower" if len(cand) == 1 else
+                      f"{MODEL_TYPE}: {len(cand)} models within bootstrap CI of leader {leader}; "
+                      f"lowest rank-sum over std / worst-month / gap")
 
-# Adaptive defaults sized to the smallest capped fold train set
-min_tr     = min(fold_idx, key=lambda f: len(f[0]))[0]
-b_profile  = {**profile, "n_fit_rows": len(min_tr), "n_fit_pos": int(y_ref.iloc[min_tr].sum())}
-
-results = {}
-for MODEL_TYPE in ["catboost", "lightgbm", "xgboost"]:
-    X_cv, y_cv = load_cv(MODEL_TYPE)
-    assert (y_cv.to_numpy() == y_ref.to_numpy()).all()
-    b_cat      = cat_cols_in_df if MODEL_TYPE in ("catboost", "lightgbm") else []
-    iter_key   = "iterations" if MODEL_TYPE == "catboost" else "n_estimators"
-    b_defaults = add_feature_dependent(adaptive_defaults(b_profile, cv_plan, overrides),
-                                       n_features=X_cv.shape[1], overrides=overrides)
-    params = {iter_key: BENCHMARK_ITERATIONS, "learning_rate": BENCHMARK_LEARNING_RATE, "use_gpu": USE_GPU}
-    results[MODEL_TYPE] = cv_score(MODEL_TYPE, params, X_cv, y_cv, fold_idx, b_cat,
-                                   defaults=b_defaults, metric=METRIC)
-    r = results[MODEL_TYPE]
-    print(f"{MODEL_TYPE}: {METRIC}={r['primary']:.4f} ± {r['primary_std']:.4f}  folds={r['primary_folds']}  "
-          f"overfit_gap={r['overfit_gap']:.4f}")
-    del X_cv
-
-# ── Selection: practical improvement criterion (not a significance test) ─────────────
-best = max(results, key=lambda m: results[m]["primary"])
-rows = []
-for m, r in results.items():
-    c = compare(results[best]["primary_folds"], r["primary_folds"], METRIC, overrides) if m != best else \
-        {"fold_deltas": [0.0] * len(r["primary_folds"]), "mean_delta": 0.0, "se_delta": 0.0,
-         "threshold": None, "folds_won": 0, "practical_improvement": False, "selection_confidence": "best"}
-    rows.append({
-        "model_type": m, "selection_metric": METRIC,
-        "val_primary_mean": round(r["primary"], 4), "val_primary_std": round(r["primary_std"], 4),
-        "val_primary_worst_fold": min(r["primary_folds"]), "val_fold_scores": r["primary_folds"],
-        "train_primary_mean": round(r["primary"] + r["overfit_gap"], 4),
-        "overfit_gap": round(r["overfit_gap"], 4),
-        "fold_deltas_vs_best": c["fold_deltas"], "mean_delta_vs_best": c["mean_delta"],
-        "se_delta": c["se_delta"], "threshold": c["threshold"], "folds_won_by_best": c["folds_won"],
-        "selection_confidence": c["selection_confidence"],     # best's confidence over this model
-        "in_tie_band": not c["practical_improvement"],
-        "roc_auc": round(r["mean_auc"], 4), "pr_auc": round(r["mean_pr_auc"], 4),
-        "gini": round(2 * r["mean_auc"] - 1, 4),
-        "ks": round(r["mean_ks"], 4), "brier": round(r["mean_brier"], 4),   # info only
-        "n_folds": cv_plan["n_folds"], "cv_strategy": cv_plan["cv_strategy"],
-    })
-
-# Tie band first (lower fold std → smaller overfit gap), then the rest by the selection metric
-benchmark_df = pd.DataFrame(rows)
-benchmark_df["_std"] = benchmark_df["val_primary_std"].round(3)
-benchmark_df = (pd.concat([
-    benchmark_df[benchmark_df.in_tie_band].sort_values(["_std", "overfit_gap"]),
-    benchmark_df[~benchmark_df.in_tie_band].sort_values("val_primary_mean", ascending=False)])
-    .drop(columns="_std").reset_index(drop=True))
-benchmark_df.insert(0, "rank", range(1, len(benchmark_df) + 1))
 benchmark_df.to_csv("reports/benchmark_results.csv", index=False)
-display(benchmark_df[["rank", "model_type", "val_primary_mean", "val_primary_std", "overfit_gap",
-                      "mean_delta_vs_best", "se_delta", "threshold", "selection_confidence", "in_tie_band"]])
-
-MODEL_TYPE = benchmark_df.iloc[0]["model_type"]
-MODEL_TYPE_challenger = (benchmark_df.iloc[1]["model_type"]
-                         if len(benchmark_df) > 1 and benchmark_df.iloc[1]["in_tie_band"] else None)
-print(f"\nSelection metric = {METRIC} (CV: {cv_plan['cv_strategy']}, {cv_plan['n_folds']} folds)")
-print(f"Champion = {MODEL_TYPE}   Challenger = {MODEL_TYPE_challenger}")
+display(benchmark_df[["model_type", "mean_val_auc", "std_month_auc", "worst_month_auc", "gap",
+                      "diff_ci_low", "diff_ci_high", "close_to_leader", "rank_sum", "champion"]])
+print("Proposed Champion:", CHAMPION_RATIONALE)
 ```
-
-## Notes
-
-- `threshold = max(practical floor, SE of paired fold deltas)`; a model is in the tie band when
-  the best model does not clear it against that model. Report it as practical improvement /
-  `selection_confidence` (`clear` | `moderate` | `tie`), never as statistically significant.
-- Defaults are compared, not tuned models — the challenger (if any) is tuned and re-compared in
-  ModelTrainer Step 3.
-- KS and Brier are informational only (Brier is shifted by `scale_pos_weight`).

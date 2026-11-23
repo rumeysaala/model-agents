@@ -1,182 +1,183 @@
 ---
 name: optuna-sql-storage
-description: Create a fault-tolerant Optuna study backed by SQL Server so HPO can resume after system crashes. The objective scores each trial with temporal cross-validation over a search space computed from the data at runtime (adaptive-search-space.md).
+description: Champion-only Optuna HPO with temporal CV inside train (val/test never used), crash-resume via SQL storage, per-fold AUC / best-iteration logging, final iteration rule and OOF predictions for calibration
 ---
- 
-## Connection Helper
- 
-```python
-from sqlalchemy import create_engine
- 
-OPTUNA_SERVER   = "DUMMY-SQL-SRV01"
-OPTUNA_DATABASE = "DummyOptunaDB"
- 
-def create_sql_conn_string(server: str = OPTUNA_SERVER, database: str = OPTUNA_DATABASE) -> str:
-    host = f"{server}.example.com"
-    return (
-        f"mssql+pyodbc://{host}/{database}"
-        "?TrustServerCertificate=yes&driver=ODBC Driver 18 for SQL Server"
-    )
-```
- 
-## Objective (temporal CV)
 
-Inputs prepared in earlier cells:
-- `space`, `SPACE_HASH` from `adaptive-search-space.md`
-- `X_cv`, `y_cv` = train + val concatenated (train first); `fold_idx = make_fold_indices(cv_plan, periods_cv, y_cv)` from `temporal-cv.md`
-- `cv_score`, `selection_metric` from `temporal-cv.md`; `build_model`, `get_best_iteration` from `model-factory.md`
+Rules
+- Only `MODEL_TYPE` (approved Champion), only the selected features, only **train** rows.
+  Folds = `cv_plan` from `reports/data_profile.json` (expanding window over train periods).
+- Objective = mean CV AUC. Per trial: fold AUCs, fold best iterations, train AUC, gap.
+- Resume: `load_if_exists=True`; study name = model + feature-set hash + search-space hash, so only
+  an identical setup resumes and any change starts a new study.
+- Final iteration count = **median of the best trial's fold best iterations** (pre-declared).
+- Storage URL = `optuna.storage` in contracts (SQLite default, or e.g. `mssql+pyodbc://...`).
+- Needs model-factory.md Blocks 1–2.
 
-The objective is the **selection metric** (`METRIC = selection_metric()`: PR-AUC for fraud,
-ROC-AUC otherwise), the same metric the benchmark ranked models with.
+## Block 1 — folds, CV scorer, search space
 
 ```python
-METRIC = selection_metric()
+import hashlib, optuna
+from sklearn.model_selection import StratifiedKFold
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-def make_objective(model_type: str, space: dict, X_cv, y_cv, cat_cols: list[str]):
-    def objective(trial):
-        params = suggest_params(trial, model_type, space, USE_GPU)
-        res = cv_score(model_type, params, X_cv, y_cv, fold_idx, cat_cols, trial=trial, metric=METRIC)
+OPTUNA_CFG = contracts.get("optuna") or {}
+def create_sql_conn_string() -> str:
+    return OPTUNA_CFG.get("storage", "sqlite:///reports/optuna_study.db")
 
-        # Log attributes for post-hoc overfitting / stability analysis and champion/challenger
-        trial.set_user_attr("best_iteration", res["best_iteration"])   # median over folds
-        trial.set_user_attr("fold_aucs", res["fold_aucs"])
-        trial.set_user_attr("fold_pr_aucs", res["fold_pr_aucs"])
-        trial.set_user_attr("std_auc", round(res["std_auc"], 4))
-        trial.set_user_attr("train_auc", round(res["mean_train_auc"], 4))
-        trial.set_user_attr("train_pr_auc", round(res["mean_train_pr_auc"], 4))
-        trial.set_user_attr("val_auc", round(res["mean_auc"], 4))
-        trial.set_user_attr("val_pr_auc", round(res["mean_pr_auc"], 4))
-        trial.set_user_attr("primary_folds", res["primary_folds"])
-        trial.set_user_attr("gap", round(res["overfit_gap"], 4))        # on METRIC
+def make_fold_indices(plan: dict, periods: pd.Series, y) -> list:
+    periods = pd.Series(periods).astype(str).reset_index(drop=True)
+    if plan["cv_strategy"] == "temporal":
+        return [(np.flatnonzero(periods.isin(f["train_periods"]).to_numpy()),
+                 np.flatnonzero(periods.isin(f["val_periods"]).to_numpy())) for f in plan["folds"]]
+    return list(StratifiedKFold(plan["n_folds"], shuffle=True, random_state=42).split(np.zeros(len(periods)), np.asarray(y)))
 
-        return res["primary"]
-    return objective
-```
- 
-## Study Creation & Optimization (load_if_exists=True)
- 
-Always use `load_if_exists=True` so that if the system crashes mid-HPO, re-running the cell resumes from the last completed trial instead of starting over. Only the remaining trials are run.
- 
-```python
-import json
-import optuna
- 
-N_TRIALS   = 50
-TIMEOUT    = 3600                                    # seconds
-
-def run_study(model_type: str, space: dict, space_hash: str, X_cv, y_cv, cat_cols: list[str]):
-    """Create/resume the SQL-backed study for one model type and return (study, best_params)."""
-    study = optuna.create_study(
-        direction="maximize",
-        study_name=f"agr-model-{model_type}-{METRIC}-{space_hash}",   # new metric/hash = new study
-        storage=create_sql_conn_string(),
-        load_if_exists=True,            # key flag: resumes from DB on crash
-        sampler=optuna.samplers.TPESampler(seed=42),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=1),
-    )
-    n_done = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    remaining = max(N_TRIALS - n_done, 0)
-    if remaining:
-        study.optimize(make_objective(model_type, space, X_cv, y_cv, cat_cols),
-                       n_trials=remaining, timeout=TIMEOUT)
-
-    best_params = full_params(space, study.best_params)
+CV_TRAIN_AUC_SAMPLE = 200_000
+def cv_score(model_type, params, X, y, fold_idx, cat_cols, trial=None, return_oof=False) -> dict:
     iter_key = "iterations" if model_type == "catboost" else "n_estimators"
-    best_params[iter_key] = study.best_trial.user_attrs["best_iteration"]
-    print(f"[{model_type}] best CV {METRIC}: {study.best_value:.4f}  "
-          f"folds={study.best_trial.user_attrs['primary_folds']}  gap={study.best_trial.user_attrs['gap']}")
-    print(f"Best iteration (median early stop): {best_params[iter_key]}")
-    print(f"Best params: {json.dumps(best_params, indent=2)}")
-    return study, best_params
+    rng = np.random.default_rng(42)
+    aucs, train_aucs, best_iters, oof = [], [], [], np.full(len(y), np.nan)
+    for k, (tr, va) in enumerate(fold_idx):
+        m = build_model(model_type, cat_cols, X.iloc[tr], y.iloc[tr], X_val=X.iloc[va], y_val=y.iloc[va], params=dict(params))
+        p = predict_proba(m, model_type, X.iloc[va], cat_cols); oof[va] = p
+        aucs.append(float(roc_auc_score(y.iloc[va], p)))
+        s = tr if len(tr) <= CV_TRAIN_AUC_SAMPLE else rng.choice(tr, CV_TRAIN_AUC_SAMPLE, replace=False)
+        train_aucs.append(get_val_auc(m, model_type, X.iloc[s], y.iloc[s], cat_cols))
+        best_iters.append(get_best_iteration(m, model_type, params.get(iter_key, 500)))
+        if trial is not None:
+            trial.report(float(np.mean(aucs)), step=k)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+    out = {"mean_auc": float(np.mean(aucs)), "std_auc": float(np.std(aucs)), "fold_aucs": aucs,
+           "mean_train_auc": float(np.mean(train_aucs)), "best_iters": best_iters,
+           "best_iteration": int(np.median(best_iters))}
+    if return_oof:
+        out["oof"] = oof
+    return out
 
-study, best_params = run_study(MODEL_TYPE, space, SPACE_HASH, X_cv, y_cv, cat_cols)
-STUDY_NAME = study.study_name
+def _int(lo, hi, log=False, step=1):
+    lo, hi = int(lo), int(hi)
+    return {"type": "fixed", "value": lo} if lo >= hi else {"type": "int", "low": lo, "high": hi, "log": log, "step": step}
+def _float(lo, hi, log=False):
+    lo, hi = float(lo), float(hi)
+    return {"type": "fixed", "value": lo} if lo >= hi else {"type": "float", "low": lo, "high": hi, "log": log}
+
+def build_search_space(model_type, defaults, cat_cols, use_gpu=False) -> dict:
+    v = lambda k: defaults[k]["value"]
+    col = _float(v("colsample_lo"), v("colsample_hi"))
+    common = {"learning_rate": _float(0.01, 0.1, log=True),
+              "scale_pos_weight": _float(v("scale_pos_weight_lo"), v("scale_pos_weight_hi"), log=True)}
+    if model_type == "xgboost":
+        return {**common, "n_estimators": _int(300, 800, step=100),
+                "max_depth": _int(v("max_depth_lo"), v("max_depth_hi")),
+                "min_child_weight": _float(v("min_child_weight_lo"), v("min_child_weight_hi"), log=True),
+                "subsample": _float(0.6, 0.85), "colsample_bytree": col, "gamma": _float(0.5, 10.0, log=True),
+                "reg_alpha": _float(1.0, 100.0, log=True), "reg_lambda": _float(5.0, 200.0, log=True)}
+    if model_type == "catboost":
+        space = {**common, "iterations": _int(300, 800, step=100),
+                 "depth": _int(v("cb_depth_lo"), v("cb_depth_hi")),
+                 "grow_policy": {"type": "cat", "choices": ["SymmetricTree", "Depthwise"]},
+                 "min_data_in_leaf": _int(v("leaf_lo"), v("leaf_hi"), log=True),
+                 "l2_leaf_reg": _float(5.0, 100.0, log=True), "bagging_temperature": _float(0.5, 5.0),
+                 "random_strength": _float(1.0, 20.0), "border_count": {"type": "cat", "choices": [32, 64, 128]}}
+        if not use_gpu:
+            space["rsm"] = col                      # rsm is CPU-only
+        if cat_cols:
+            space.update(one_hot_max_size=_int(2, 10), max_ctr_complexity=_int(1, 2))
+        return space
+    return {**common, "n_estimators": _int(300, 800, step=100),
+            "max_depth": _int(v("max_depth_lo"), v("max_depth_hi")),
+            "num_leaves": _int(v("num_leaves_lo"), v("num_leaves_hi")),
+            "min_child_samples": _int(v("leaf_lo"), v("leaf_hi"), log=True),
+            "subsample": _float(0.6, 0.85), "subsample_freq": {"type": "fixed", "value": 1},
+            "colsample_bytree": col, "reg_alpha": _float(0.1, 10.0, log=True),
+            "reg_lambda": _float(1.0, 50.0, log=True), "min_split_gain": _float(0.05, 2.0, log=True)}
+
+def _suggest(trial, name, spec, high=None):
+    t = spec["type"]
+    if t == "fixed": return spec["value"]
+    if t == "cat":   return trial.suggest_categorical(name, spec["choices"])
+    hi = spec["high"] if high is None else high
+    if t == "int":
+        if hi <= spec["low"]: return trial.suggest_int(name, int(hi), int(hi))
+        return trial.suggest_int(name, spec["low"], hi, log=True) if spec.get("log") else \
+               trial.suggest_int(name, spec["low"], hi, step=spec.get("step", 1))
+    return trial.suggest_float(name, spec["low"], hi, log=spec.get("log", False))
+
+def suggest_params(trial, model_type, space, use_gpu) -> dict:
+    params = {}
+    for name, spec in space.items():
+        if model_type == "lightgbm" and name == "num_leaves" and spec["type"] == "int":
+            params[name] = _suggest(trial, name, spec, high=min(spec["high"], 2 ** params["max_depth"] - 1))
+        elif model_type == "catboost" and name == "min_data_in_leaf":
+            if params.get("grow_policy") == "Depthwise":
+                params[name] = _suggest(trial, name, spec)
+        else:
+            params[name] = _suggest(trial, name, spec)
+    if params.get("scale_pos_weight", 1.0) <= 1.0:
+        params.pop("scale_pos_weight", None)
+    params["use_gpu"] = use_gpu
+    return params
+
+def full_params(space, best) -> dict:
+    p = {**{k: s["value"] for k, s in space.items() if s["type"] == "fixed"}, **best}
+    if p.get("scale_pos_weight", 1.0) <= 1.0:
+        p.pop("scale_pos_weight", None)
+    return p
+
+def short_hash(obj) -> str:
+    return hashlib.sha1(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:8]
 ```
 
-## Champion / challenger (only if `pipeline_config.MODEL_TYPE_challenger` is set)
-
-Same folds, same `selected_features`, same budget (`N_TRIALS`, `TIMEOUT`). The challenger data
-comes from its own encoded parquets (column names are identical across model types). It replaces
-the champion only on a **practical improvement** (`compare` in `temporal-cv.md`); ties keep the
-champion. Limitation: the feature set was selected with the champion, so this compares model
-families on the champion's feature set, not each family on its own optimum.
+## Block 2 — baseline CV, study, best params, OOF
 
 ```python
-import datetime as dt
+X_cv, y_cv = X_train[selected].reset_index(drop=True), y_train.reset_index(drop=True)
+periods_tr = pd.read_parquet("data/processed/_periods_train.parquet").iloc[:, 0].astype(str)
+fold_idx   = make_fold_indices(cv_plan, periods_tr, y_cv)
+space      = build_search_space(MODEL_TYPE, defaults, cat_cols, USE_GPU)
+SPACE_HASH, FEATURE_HASH = short_hash({"space": space, "gpu": USE_GPU}), short_hash({"f": selected, "cv": cv_plan})
+STUDY_NAME = f"{MODEL_TYPE}-f{FEATURE_HASH}-s{SPACE_HASH}"
+with open("reports/search_space.json", "w") as f:
+    json.dump({"model_type": MODEL_TYPE, "study_name": STUDY_NAME, "space": space, "adaptive": defaults}, f, indent=2, default=str)
 
-cfg        = json.load(open("reports/pipeline_config.json"))
-CHALLENGER = cfg.get("MODEL_TYPE_challenger")
-selection  = {"champion": MODEL_TYPE, "challenger": CHALLENGER, "metric": METRIC,
-              "score_definitions": {
-                  "validation": "per-fold val block (temporal CV; fraud: blocks inside train), full rows, also used for early stopping",
-                  "train": f"fold fit rows, sample <= {CV_TRAIN_AUC_SAMPLE}",
-                  "overfit_gap": f"mean train {METRIC} - mean validation {METRIC}"},
-              "limitation": "same feature set (selected with champion)"}
+baseline = cv_score(MODEL_TYPE, {"use_gpu": USE_GPU}, X_cv, y_cv, fold_idx, cat_cols)
+pd.DataFrame([{"params": "MODEL_CONFIGS defaults", "cv_mean_auc": baseline["mean_auc"], "cv_std_auc": baseline["std_auc"],
+               "fold_aucs": baseline["fold_aucs"], "train_auc": baseline["mean_train_auc"]}]).to_csv("reports/baseline_auc.csv", index=False)
 
-if CHALLENGER and CHALLENGER != MODEL_TYPE:
-    CV_SPLITS = ["train"] if IS_FRAUD else ["train", "val"]               # same rows as X_cv (Step 0b)
-    Xc_cv = pd.concat([pd.read_parquet(f"data/processed/{CHALLENGER}_{s}.parquet") for s in CV_SPLITS],
-                      ignore_index=True)
-    yc_cv = Xc_cv.pop("TARGET_F")
-    assert (yc_cv.to_numpy() == y_cv.to_numpy()).all(), "challenger rows misaligned with champion CV rows"
-    Xc_cv    = Xc_cv[selected]
-    space_c  = build_search_space(CHALLENGER, defaults, cat_cols, USE_GPU)
-    hash_c   = space_hash(space_c, USE_GPU)
-    study_c, best_params_c = run_study(CHALLENGER, space_c, hash_c, Xc_cv, yc_cv, cat_cols)
+def objective(trial):
+    params = suggest_params(trial, MODEL_TYPE, space, USE_GPU)
+    res = cv_score(MODEL_TYPE, params, X_cv, y_cv, fold_idx, cat_cols, trial=trial)
+    for k in ("fold_aucs", "best_iters", "std_auc"):
+        trial.set_user_attr(k, res[k])
+    trial.set_user_attr("train_auc", res["mean_train_auc"])
+    trial.set_user_attr("gap", res["mean_train_auc"] - res["mean_auc"])
+    return res["mean_auc"]
 
-    ch_ua, cl_ua = study.best_trial.user_attrs, study_c.best_trial.user_attrs
-    cmp = compare(cl_ua["primary_folds"], ch_ua["primary_folds"], METRIC, overrides)
-    winner = CHALLENGER if cmp["practical_improvement"] else MODEL_TYPE
-    selection.update({
-        "champion_cv": round(study.best_value, 4), "challenger_cv": round(study_c.best_value, 4),
-        "champion_fold_scores": ch_ua["primary_folds"], "challenger_fold_scores": cl_ua["primary_folds"],
-        **cmp, "overfit_gap": {"champion": ch_ua["gap"], "challenger": cl_ua["gap"]},
-        "winner": winner,
-        "reason": ("challenger shows practical improvement" if winner == CHALLENGER
-                   else "no practical improvement over champion → champion kept"),
-    })
-    if winner == CHALLENGER:
-        MODEL_TYPE, study, best_params = CHALLENGER, study_c, best_params_c
-        space, SPACE_HASH = space_c, hash_c
-        X_cv, y_cv = Xc_cv, yc_cv
-        save_search_space(MODEL_TYPE, space, defaults, profile, USE_GPU)   # search_space.json follows the winner
-        cfg.update({"MODEL_TYPE": MODEL_TYPE, "approval_status": "challenger_won",
-                    "selected_timestamp": dt.datetime.now().isoformat(timespec="seconds")})
-    cfg["model_selection"] = {k: selection.get(k) for k in
-                              ("champion", "challenger", "winner", "metric", "mean_delta", "se_delta",
-                               "threshold", "selection_confidence")}
-    json.dump(cfg, open("reports/pipeline_config.json", "w"), indent=2)
-else:
-    selection.update({"champion_cv": round(study.best_value, 4),
-                      "champion_fold_scores": study.best_trial.user_attrs["primary_folds"],
-                      "winner": MODEL_TYPE, "reason": "no challenger"})
+study = optuna.create_study(direction="maximize", study_name=STUDY_NAME, storage=create_sql_conn_string(),
+                            load_if_exists=True, sampler=optuna.samplers.TPESampler(seed=42),
+                            pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=1))
+N_TRIALS, TIMEOUT = int(OPTUNA_CFG.get("n_trials", 50)), int(OPTUNA_CFG.get("timeout_sec", 3600))
+n_done = sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
+if N_TRIALS - n_done > 0:
+    study.optimize(objective, n_trials=N_TRIALS - n_done, timeout=TIMEOUT)
+N_TRIALS_COMPLETED = sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
+study.trials_dataframe().to_csv("reports/optuna_trials.csv", index=False)
 
-STUDY_NAME = study.study_name
-json.dump(selection, open("reports/model_selection.json", "w"), indent=2, default=str)
-print(json.dumps({k: selection.get(k) for k in ("champion", "challenger", "winner", "mean_delta",
-                  "se_delta", "threshold", "folds_won", "selection_confidence")}, indent=2))
+iter_key   = "iterations" if MODEL_TYPE == "catboost" else "n_estimators"
+bt         = study.best_trial
+trial_params = full_params(space, study.best_params)              # as tuned (upper bound + early stopping)
+best_params  = {**trial_params, iter_key: int(np.median(bt.user_attrs["best_iters"]))}   # final rule
+with open("reports/best_params.json", "w") as f:
+    json.dump(best_params, f, indent=2, default=str)
+print(f"{STUDY_NAME}: {N_TRIALS_COMPLETED} trials | best CV AUC={study.best_value:.6f} "
+      f"folds={bt.user_attrs['fold_aucs']} best_iters={bt.user_attrs['best_iters']} -> {iter_key}={best_params[iter_key]}")
+
+oof_res = cv_score(MODEL_TYPE, {**trial_params, "use_gpu": USE_GPU}, X_cv, y_cv, fold_idx, cat_cols, return_oof=True)
+fold_of = np.full(len(y_cv), -1)
+for k, (_, va) in enumerate(fold_idx):
+    fold_of[va] = k
+oof_df = pd.DataFrame({"row": np.arange(len(y_cv)), "period": periods_tr.to_numpy(), "fold": fold_of,
+                       "y": y_cv.to_numpy(), "p": oof_res["oof"]}).query("fold >= 0")
+oof_df.to_parquet("reports/oof_predictions.parquet", index=False)
+print(f"OOF: {len(oof_df):,} rows, {int(oof_df.y.sum())} positives, AUC={roc_auc_score(oof_df.y, oof_df.p):.6f}")
 ```
- 
-## Search Space
-
-Ranges are **not** in this file. They are computed for every run from the data profile
-(rows, positives, event rate, selected feature count) by `adaptive-search-space.md` and saved to
-`reports/search_space.json` with an `auto`/`override` source per value. Fixed regularisation
-ranges (learning_rate 0.01–0.1, subsample 0.6–0.85, reg_*, gamma, border_count, iterations
-300–800) are defined there too.
- 
-## Notes
- 
-- `STUDY_NAME` encodes `MODEL_TYPE`, the selection metric and the search-space hash: re-running on
-  the same data, metric and ranges resumes the study; changed data or overrides start a new one.
-  Champion and challenger have separate studies and both resume independently.
-- `load_if_exists=True` is the crash-resume mechanism — if the DB already contains trials for `STUDY_NAME`, they are not re-run.
-- Each trial fits `n_folds` models, so it costs `n_folds`× a single split. `TIMEOUT` still bounds a
-  run; the next run resumes the remaining trials. Pruned trials do not count toward `N_TRIALS`.
-- `build_model` and `predict_proba` come from `model-factory.md`.
-- Requires `optuna[sqlalchemy]` (already pulled by `optuna`) and `pyodbc` in the environment.
-- The same `create_sql_conn_string()` helper is consistent with `sql-data-ingestion.md`; do not define a second helper inline.
-- After the optimization is complete, replace `iterations`/`n_estimators` with the user attribute `best_iteration`
-  (median of the fold early-stopping optima); the final model is fit without early stopping.
-- Never pass the `test` set into `objective` — CV uses train + val only.
-- `train_auc`, `train_pr_auc`, `gap` (on the selection metric), `std_auc`, `fold_aucs`, `fold_pr_aucs` and `primary_folds` are logged as `user_attr` for post-hoc analysis via `study.trials_dataframe()`; `primary_folds` feeds the champion/challenger `compare`.

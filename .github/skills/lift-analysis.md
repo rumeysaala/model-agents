@@ -1,6 +1,6 @@
 ---
 name: lift-analysis
-description: computes decile-based lift table and cumulative gains plot on the test set, saves reports/lift_table.csv and reports/figures/lift_curve.png
+description: computes decile-based lift table and cumulative gains plot on the frozen OOT test set, saves reports/lift_table.csv and reports/figures/lift_curve.png
 ---
 
 ```python
