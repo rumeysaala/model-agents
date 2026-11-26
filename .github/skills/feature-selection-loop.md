@@ -134,4 +134,4 @@ challenger_df = pd.DataFrame(chk).sort_values("mean_val_auc", ascending=False)
 challenger_df.to_csv("reports/selection_challenger_check.csv", index=False)
 display(challenger_df)
 ```
-`cat_cols_all` = NOMINAL + BOOLEAN names from `feature_types.csv` (not emptied for xgboost).
+`cat_cols_all` = NOMINAL + BOOLEAN `final_type` names from `feature_types.csv` (not emptied for xgboost).

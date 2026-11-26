@@ -7,8 +7,8 @@ Canonical skill root: `.github/skills`
 | notebook-execution | notebook-execution.md | write .ipynb directly, run all cells with VS Code notebook tools, read only the stage summary (token policy) | all stage agents, Orchestrator |
 | stage-summary | stage-summary.md | write small `reports/summaries/<stage>_summary.json` at the end of every stage notebook | all stage agents |
 | sql-data-ingestion | sql-data-ingestion.md | pull data from SQL in chunks and save as parquet | FeatureTypeDeclaration |
-| feature-type-declaration-rules | feature-type-declaration-rules.md | build exclusion list (PII + user leakage + bad features + datetime + high-unique) and assign feature types | FeatureTypeDeclaration |
-| data-audit | data-audit.md | monthly rows / positives / event rate, duplicates, target checks; leakage-suspect report (no auto exclusion) | FeatureTypeDeclaration |
+| feature-type-declaration-rules | feature-type-declaration-rules.md | build exclusion list (PII + user leakage + bad features + datetime + high-unique), assign feature types, rerun safety + Gate 1 sync | FeatureTypeDeclaration, Orchestrator (Gate 1 sync) |
+| data-audit | data-audit.md | monthly rows / positives / event rate, duplicates, target checks; leakage-suspect report, PSI train→val warning (non-fraud), Gate 1 review flags (no auto exclusion) | FeatureTypeDeclaration |
 | correlation | correlation.md | high-correlation pair detection and exclusion | FeatureTypeDeclaration |
 | temporal-data-split | temporal-data-split.md | period normalisation, train/val/test split, train-only HPO fold plan, fixed validation evaluation plan | FeatureTypeDeclaration, Preprocess, ModelTrainer |
 | null-like-cleaning | null-like-cleaning.md | null-like value cleaning (Block 1 pattern reused by the deployable pipeline) | Preprocess, ModelTrainer |

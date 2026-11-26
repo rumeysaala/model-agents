@@ -24,8 +24,10 @@ Load constants from `config/pipeline_contracts.json` as specified in #file:../sk
 
 0. **Check & ingest raw data** — Check if `data/data.parquet` exists. If it does **not** exist, pull from SQL using #file:../skills/sql-data-ingestion.md Skip this step if the file already exists.
 
+0b. **Rerun safety**: stop on unsynced Gate 1 CSV edits; archive the previous CSVs (see the Rerun Safety section in #file:../skills/feature-type-declaration-rules.md).
+
 1. Read `data/data.parquet`
-2. Assign a type to each feature according to the following rules:
+2. Assign `detected_type` to each feature according to the following rules (`final_type` = `contracts.type_overrides[col]`, else `detected_type`):
 
    | Type      | Rule                                                                                               |
    |-----------|----------------------------------------------------------------------------------------------------|
@@ -41,17 +43,16 @@ Load constants from `config/pipeline_contracts.json` as specified in #file:../sk
    - Mark excluded columns with:
      - excluded = True
      - exclude_reason = "bad_feature_high_corr"
-     - declared_type = "EXCLUDED"
    Follow the logic in #file:../skills/correlation.md
 
 
 4. Build the exclusion list and apply `excluded=True` with `exclude_reason` by following `#file:../skills/feature-type-declaration-rules.md` (includes `excluded_columns.leakage` → `leakage_user`)
 
-4b. **Data & leakage audit** — follow #file:../skills/data-audit.md (uses Block A of #file:../skills/temporal-data-split.md): monthly rows / positives / negatives / event rate per split, duplicate keys, target checks → `reports/data_audit.csv`; leakage suspects → `reports/leakage_audit.csv`. Report only — never exclude a suspect yourself.
+4b. **Data & leakage audit** — follow #file:../skills/data-audit.md (uses Block A of #file:../skills/temporal-data-split.md): monthly rows / positives / negatives / event rate per split, duplicate keys, target checks → `reports/data_audit.csv`; leakage suspects → `reports/leakage_audit.csv`; PSI train→val (non-fraud) → `reports/psi_drift.csv`; then `review_flags`. Report only — never exclude a suspect or a drifted feature yourself.
 
-5. - Save the result as `reports/feature_types.csv`. Schema:
+5. - Save the result as `reports/feature_types.csv` + snapshot `reports/feature_types_auto.csv` (end of the data-audit block). Schema:
 
-      `col, dtype_original, nunique, declared_type, excluded, exclude_reason`
+      `col, detected_type, final_type, nunique, null_pct, excluded, exclude_reason, review_flags, decision_source`
 
    - Save the correlation pairs as `reports/high_corr_pairs.csv`. Schema:
 
@@ -71,9 +72,10 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 - Data loading
 - PII auto-detection and contracts update 
 - Auto bad feature derivation and final exclusion list build (follow `#file:../skills/feature-type-declaration-rules.md`)
+- Rerun safety check (right after constants)
 - Type determination logic and `feature_types_df` creation
-- Save `reports/feature_types.csv` and `reports/high_corr_pairs.csv`
-- Data & leakage audit → `reports/data_audit.csv`, `reports/leakage_audit.csv` (#file:../skills/data-audit.md)
+- Save `reports/high_corr_pairs.csv`
+- Data, leakage & PSI audit + review flags → `reports/data_audit.csv`, `reports/leakage_audit.csv`, `reports/psi_drift.csv`, then save `reports/feature_types.csv` + `reports/feature_types_auto.csv` (#file:../skills/data-audit.md)
 - Stage summary → `reports/summaries/feature_type_declaration_summary.json` (#file:../skills/stage-summary.md)
 - Markdown analysis — appended **after** execution from the summary: type distribution, excluded feature count and reasons, suspicious ORDINAL/BOOLEAN calls the user should check
 
@@ -86,13 +88,15 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 | `reports/high_corr_pairs.csv` | Highly correlated pairs and which one was dropped |
 | `reports/data_audit.csv` | Split × period rows / positives / negatives / event rate (+ flag) |
 | `reports/leakage_audit.csv` | Leakage suspects for the user's Gate 1 decision |
+| `reports/psi_drift.csv` | PSI train→val per feature (non-fraud only; warning, no exclusion) |
+| `reports/feature_types_auto.csv` | Read-only snapshot of the FTD output (Gate 1 sync diff base) |
 | `reports/summaries/feature_type_declaration_summary.json` | Stage summary (read by agent + Orchestrator gate) |
 
 ## Constraints
 
 - Do NOT log or report PII columns in raw form
 - Do NOT perform modeling — only define types, audit and save
-- Do NOT exclude leakage suspects automatically; only the user moves them to `excluded_columns.leakage` / `leakage_reviewed`
+- Do NOT exclude leakage suspects or drifted features automatically; only Gate 1 sync writes user decisions to contracts
 - SQL connection parameters are defined in `#file:../skills/sql-data-ingestion.md` — do not hardcode them elsewhere
 - Follow `random_state=42`, `encoding="ISO-8859-9"` standards
 - Each cell should have a single responsibility

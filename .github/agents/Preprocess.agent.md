@@ -19,7 +19,7 @@ FeatureTypeDeclaration → [Preprocess] → FeatureSelection → ModelTrainer
 
 | # | Action | Skill |
 |---|---|---|
-| 0 | Read `feature_types.csv` (filter `excluded == False`) → build `cat_cols = NOMINAL + BOOLEAN`, `numeric_cols = NUMERIC + ORDINAL` | — |
+| 0 | Read `feature_types.csv` (filter `excluded == False`) → by `final_type` build `cat_cols = NOMINAL + BOOLEAN`, `numeric_cols = NUMERIC + ORDINAL` | — |
 | 1 | Load `data/data.parquet`; `TARGET_COL` from contracts | — |
 | 2 | Temporal split (Blocks A + B) | #file:../skills/temporal-data-split.md |
 | 3 | Null-like cleaning (Blocks 1 + 2) | #file:../skills/null-like-cleaning.md |

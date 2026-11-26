@@ -73,24 +73,32 @@ Run stage agents in order using a single contract source:
 
 ### Gate 1: After `feature_type_declaration`
 - Verify `data/data.parquet` and `reports/feature_types.csv` exist.
-- Read `reports/summaries/feature_type_declaration_summary.json` and show the user
-	`type_counts`, `exclude_reason_counts`, `integrity` (target checks, duplicate keys, event-rate flagged periods)
-	and `leakage_suspects`.
-- For every leakage suspect ask the user: **exclude** (add to `excluded_columns.leakage`, rerun the stage)
-	or **keep** (add to `excluded_columns.leakage_reviewed`). Never decide for the user.
-- Show only the rows that need a human decision (not the whole CSV):
+- Read `reports/summaries/feature_type_declaration_summary.json` and show the user:
+	- `type_counts`, `excluded_count`, `exclude_reason_counts`;
+	- `integrity` (target checks, duplicate keys, event-rate flagged periods);
+	- `review_flag_counts`, `leakage_suspects`, `drift_flagged` (or "PSI skipped" if `psi_skipped`).
+- Show the top 10 rows per flag (not the whole CSV):
 
 ```bash
 env/bin/python - <<'PY'
 import pandas as pd
-ft = pd.read_csv("reports/feature_types.csv")
-print("EXCLUDED:"); print(ft[ft.excluded == True][["col","exclude_reason"]].to_string(index=False))
-print("\nORDINAL / BOOLEAN (check these):")
-print(ft[ft.declared_type.isin(["ORDINAL","BOOLEAN"])][["col","dtype_original","nunique","declared_type"]].to_string(index=False))
-print(f"\nNUMERIC: {(ft.declared_type=='NUMERIC').sum()}  NOMINAL: {(ft.declared_type=='NOMINAL').sum()}  → full list: reports/feature_types.csv")
+ft = pd.read_csv("reports/feature_types.csv"); f = ft.assign(flag=ft.review_flags.fillna("").str.split("|")).explode("flag")
+for k, g in f[f.flag != ""].groupby("flag"):
+    print(f"\n[{k}] {len(g)} rows"); print(g.head(10)[["col","detected_type","final_type","nunique","null_pct"]].to_string(index=False))
 PY
 ```
 
+- Tell the user they can edit `final_type` / `excluded` in `reports/feature_types.csv` directly, or answer in chat.
+	Ask at most 4 batched questions (never one per column): (a) leakage suspects exclude/keep, (b) drift features
+	keep/exclude, (c) type corrections `col=TYPE` and manual exclude / undo, (d) approval.
+	- `all` / `none` count only when the reply repeats the count shown (`exclude all 17`); otherwise ask again.
+	- Names must be in the flagged set (a, b) or in the column list (c); list unknown names back.
+	- Never decide for the user.
+- On approval, write the chat answers to `reports/gate1_chat.json` as `{"final_type": {col: TYPE}, "excluded": {col: true|false}}`
+	(keep / undo = false), then run the **Gate 1 Sync** block of #file:../skills/feature-type-declaration-rules.md with `env/bin/python`.
+	On a conflict it applies nothing; ask the user to pick per item, with numeric confirmation.
+
+- If decisions were synced: rerun `feature_type_declaration`, then ask again only about flags that are still undecided.
 - Pause and explicitly ask the user to approve the feature types before continuing.
 - Do NOT proceed to `preprocess` until the user confirms approval.
 

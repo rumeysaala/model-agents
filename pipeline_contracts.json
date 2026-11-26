@@ -20,8 +20,12 @@
       "FOLLOW_CODE_L3M"
     ],
     "leakage": [],
-    "leakage_reviewed": []
+    "leakage_reviewed": [],
+    "manual": [],
+    "keep_override": []
   },
+  "type_overrides": {},
+  "psi_decisions": {},
   "temporal_split": {
     "period_column": "DONEM",
     "test_periods": [
@@ -57,7 +61,9 @@
         "notebook": "notebooks/01_feature_type_declaration.ipynb",
         "summary": "reports/summaries/feature_type_declaration_summary.json",
         "data_audit": "reports/data_audit.csv",
-        "leakage_audit": "reports/leakage_audit.csv"
+        "leakage_audit": "reports/leakage_audit.csv",
+        "psi_drift": "reports/psi_drift.csv (non-fraud only)",
+        "feature_types_auto": "reports/feature_types_auto.csv"
       },
       "validation": [
         "data/data.parquet exists",
@@ -181,7 +187,9 @@
     ],
     "single_feature_auc_max": 0.9,
     "event_rate_z": 3.0,
-    "null_rate_jump": 0.3
+    "null_rate_jump": 0.3,
+    "psi_max": 0.25,
+    "psi_retest_delta": 0.05
   },
   "preprocessing": {
     "impute_numeric": {

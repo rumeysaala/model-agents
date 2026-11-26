@@ -31,7 +31,7 @@ test = frozen evaluation only. No result on test may change features, params, ca
 
 | # | Step | Skill |
 |---|---|---|
-| 0 | Config & preflight: approved `MODEL_TYPE`, train/val parquets, `selected_features.csv` (its `model_type` must match), `data_profile.json`; `cat_cols` = NOMINAL/BOOLEAN in selected (`[]` for xgboost) | #file:../skills/read-pipeline-config.md |
+| 0 | Config & preflight: approved `MODEL_TYPE`, train/val parquets, `selected_features.csv` (its `model_type` must match), `data_profile.json`; `cat_cols` = NOMINAL/BOOLEAN `final_type` in selected (`[]` for xgboost) | #file:../skills/read-pipeline-config.md |
 | 1 | Model factory + profile (`load_profile`, `add_feature_dependent` for the selected count) | #file:../skills/model-factory.md (Blocks 1–2) |
 | 2 | Folds, CV scorer, search space | #file:../skills/optuna-sql-storage.md (Block 1) |
 | 3 | Baseline CV → `baseline_auc.csv`; Optuna (resume) → `best_params.json` with iterations = median fold best iteration; OOF → `oof_predictions.parquet` | #file:../skills/optuna-sql-storage.md (Block 2) |

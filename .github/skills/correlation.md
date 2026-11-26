@@ -36,21 +36,8 @@ When a column is selected for removal by high correlation:
 
 - `excluded = True`
 - `exclude_reason = "bad_feature_high_corr"`
-- `declared_type = "EXCLUDED"`
 
-### Exclude Reason Priority
-
-Use this priority order:
-
-1. `PII`
-2. `target`
-3. `bad_feature_user`
-4. `bad_feature_date`
-5. `bad_feature_id`
-6. `bad_feature_high_unique`
-7. `bad_feature_high_corr`
-
-Do not overwrite a higher-priority reason with a lower-priority one.
+Never drop a `KEEP_OVERRIDE` column. Reason priority: feature-type-declaration-rules.md. Never overwrite a higher-priority reason.
 
 ### Minimal Reference Implementation
 
@@ -100,7 +87,9 @@ if HIGH_CORR_EXCLUSION_ENABLED and TARGET_COL in df.columns and pd.api.types.is_
                 c1_t = 0.0 if pd.isna(c1_t) else float(c1_t)
                 c2_t = 0.0 if pd.isna(c2_t) else float(c2_t)
 
-                if c1_t >= c2_t:
+                if c2 in KEEP_OVERRIDE and c1 in KEEP_OVERRIDE:
+                    continue
+                if (c1_t >= c2_t and c2 not in KEEP_OVERRIDE) or c1 in KEEP_OVERRIDE:
                     to_exclude_high_corr.add(c2)
                     kept, dropped = c1, c2
                 else:
@@ -122,7 +111,6 @@ if HIGH_CORR_EXCLUSION_ENABLED and TARGET_COL in df.columns and pd.api.types.is_
 mask = feature_types_df['col'].isin(to_exclude_high_corr) & (~feature_types_df['excluded'])
 feature_types_df.loc[mask, 'excluded'] = True
 feature_types_df.loc[mask, 'exclude_reason'] = 'bad_feature_high_corr'
-feature_types_df.loc[mask, 'declared_type'] = 'EXCLUDED'
 
 print(f'High correlation exclusions: {len(to_exclude_high_corr)}')
 print(f'Total excluded now: {feature_types_df["excluded"].sum()}')
