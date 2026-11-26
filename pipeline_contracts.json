@@ -18,14 +18,8 @@
     ],
     "bad_features": [
       "FOLLOW_CODE_L3M"
-    ],
-    "leakage": [],
-    "leakage_reviewed": [],
-    "manual": [],
-    "keep_override": []
+    ]
   },
-  "type_overrides": {},
-  "psi_decisions": {},
   "temporal_split": {
     "period_column": "DONEM",
     "test_periods": [

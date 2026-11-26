@@ -5,14 +5,29 @@ description: period normalisation, time-based train/val/test split from config/p
 
 ## Block A — split config + period normalisation (Preprocess, FeatureTypeDeclaration audit, pipeline)
 
+`pipeline_contracts.json` is user-owned (never written by code); gate decisions live in `config/gate_decisions.json`
+(written only by the Gate 1 / WoE syncs) and are merged into `contracts` **in memory** here, so every reader keeps using
+`contracts[...]`. A decision key filled in `pipeline_contracts.json` stops the run.
+
 ```python
-import json, hashlib
+import json, hashlib, os
 import numpy as np, pandas as pd
 
 with open("config/pipeline_contracts.json", "r", encoding="utf-8") as f:
     contracts = json.load(f)
 if "temporal_split" not in contracts:
     raise KeyError("Missing required key: temporal_split in config/pipeline_contracts.json")
+GATE_PATH = "config/gate_decisions.json"
+GATE = json.load(open(GATE_PATH, encoding="utf-8")) if os.path.exists(GATE_PATH) else {}
+_ex, _gx = contracts.setdefault("excluded_columns", {}), GATE.get("excluded") or {}
+for k in ("type_overrides", "psi_decisions", "woe_decisions"):
+    assert not contracts.get(k), f"'{k}' belongs in {GATE_PATH} (written by the gate sync), not in pipeline_contracts.json"
+    contracts[k] = GATE.get(k) or {}
+for k in ("leakage", "leakage_reviewed", "manual", "keep_override"):
+    assert not _ex.get(k), f"'excluded_columns.{k}' belongs in {GATE_PATH}, not in pipeline_contracts.json"
+    _ex[k] = list(_gx.get(k, []))
+_ex["pii"] = list(dict.fromkeys(list(_ex.get("pii", [])) + list(_gx.get("pii_auto", []))))        # user PII + auto-detected
+_ex["bad_features"] = [c for c in _ex.get("bad_features", []) if c not in set(_gx.get("bad_features_undo", []))]
 
 split_cfg     = contracts["temporal_split"]
 period_column = split_cfg.get("period_column")

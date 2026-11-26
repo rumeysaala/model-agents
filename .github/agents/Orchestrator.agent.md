@@ -76,7 +76,7 @@ Run stage agents in order using a single contract source:
 - Read `reports/summaries/feature_type_declaration_summary.json` and show the user:
 	- `type_counts`, `excluded_count`, `exclude_reason_counts`;
 	- `integrity` (target checks, duplicate keys, event-rate flagged periods);
-	- `review_flag_counts`, `leakage_suspects`, `drift_flagged` (or "PSI skipped" if `psi_skipped`).
+	- `review_flag_counts`, `leakage_suspects`, `drift_flagged`, `drift_reason_counts`, `stat_status_counts`.
 - Show the top 10 rows per flag (not the whole CSV):
 
 ```bash
@@ -88,23 +88,19 @@ for k, g in f[f.flag != ""].groupby("flag"):
 PY
 ```
 
-- Tell the user they can edit `final_type` / `excluded` in `reports/feature_types.csv` directly, or answer in chat.
-	Ask at most 4 batched questions (never one per column): (a) leakage suspects exclude/keep, (b) drift features
-	keep/exclude, (c) type corrections `col=TYPE` and manual exclude / undo, (d) approval.
-	- `all` / `none` count only when the reply repeats the count shown (`exclude all 17`); otherwise ask again.
-	- Names must be in the flagged set (a, b) or in the column list (c); list unknown names back.
-	- Never decide for the user.
-- On approval, write the chat answers to `reports/gate1_chat.json` as `{"final_type": {col: TYPE}, "excluded": {col: true|false}}`
-	(keep / undo = false), then run the **Gate 1 Sync** block of #file:../skills/feature-type-declaration-rules.md with `env/bin/python`.
-	On a conflict it applies nothing; ask the user to pick per item, with numeric confirmation.
-
-- If decisions were synced: rerun `feature_type_declaration`, then ask again only about flags that are still undecided.
-- Pause and explicitly ask the user to approve the feature types before continuing.
+- No per-column questions. Tell the user to review the files and edit only `final_type` / `excluded` in
+	`reports/feature_types.csv` (details: `reports/psi_drift.csv`, `reports/psi_monthly.csv`, `reports/leakage_audit.csv`).
+	**Approval = keep the rest**: flagged `drift` / `leakage_suspect` rows left with `excluded = False` are recorded as keep.
+- When the user says they are done, run the **Gate 1 Sync** block of #file:../skills/feature-type-declaration-rules.md
+	with `env/bin/python` (dry run) and show its counts. The user approves by repeating them (`onay — 48 drift, 3 leakage`);
+	write `reports/gate1_approval.json` `{"drift": 48, "leakage_suspect": 3}` and run the sync again. Never decide for the user.
+- If it prints `rerun FTD: True`: rerun `feature_type_declaration` and show only flags that are still undecided.
 - Do NOT proceed to `preprocess` until the user confirms approval.
 
 ### Gate 2: After `preprocess`
 - Read `reports/summaries/preprocess_summary.json` (not the notebook) and show the user the `benchmark` rows,
-	`MODEL_TYPE_proposed` and `champion_rationale`.
+	`MODEL_TYPE_proposed` and `champion_rationale`; also `woe.status_counts`, `woe.dropped`, `woe.high_iv_review`, `woe.stale_decisions`,
+	`woe.unknown_features`. If `woe.undecided` is non-empty, hand back to Preprocess step 9 (WoE file review), then re-check Gate 2.
 - Verify `reports/benchmark_results.csv` exists.
 - Verify benchmark schema contains at least these columns:
 	- `model_type`, `mean_val_auc`, `std_month_auc`, `worst_month_auc`, `pooled_val_auc`, `train_auc`, `gap`

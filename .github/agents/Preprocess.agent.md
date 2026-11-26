@@ -19,18 +19,19 @@ FeatureTypeDeclaration → [Preprocess] → FeatureSelection → ModelTrainer
 
 | # | Action | Skill |
 |---|---|---|
-| 0 | Read `feature_types.csv` (filter `excluded == False`) → by `final_type` build `cat_cols = NOMINAL + BOOLEAN`, `numeric_cols = NUMERIC + ORDINAL` | — |
+| 0 | Read `feature_types.csv` (filter `excluded == False`) → by `final_type` build `cat_cols = NOMINAL + BOOLEAN`, `numeric_cols = NUMERIC + ORDINAL`, `active_features = numeric_cols + cat_cols` | — |
 | 1 | Load `data/data.parquet`; `TARGET_COL` from contracts | — |
 | 2 | Temporal split (Blocks A + B) | #file:../skills/temporal-data-split.md |
 | 3 | Null-like cleaning (Blocks 1 + 2) | #file:../skills/null-like-cleaning.md |
 | 4 | Model-based encoding; numeric NaN native unless `preprocessing.impute_numeric` is set; fit on train only | #file:../skills/encode-and-impute.md |
+| 4b | WoE / IV report on train (categorical; rare merge + Laplace, IV only) → `reports/woe_iv.csv`; only valid user `drop` decisions remove columns from `active_features` / `cat_cols` | #file:../skills/encode-and-impute.md (Block 2) |
 | 5 | Save processed splits + period labels | #file:../skills/save-processed-parquet.md |
 | 5b | Save raw OOT test rows (`data/out_of_time/oot_raw.parquet`) | #file:../skills/save-oot-parquet.md |
 | 5c | Data profile: train-only HPO folds + fixed validation plan (temporal-data-split Block C), then `compute_data_profile` / `adaptive_defaults` / `save_profile` | #file:../skills/temporal-data-split.md, #file:../skills/model-factory.md (Block 1) |
 | 6 | Benchmark 3 models on full train, fixed val months → pre-declared Champion rule → `benchmark_results.csv` | #file:../skills/benchmark-models.md (+ model-factory Block 2) |
 | 7 | Write **proposed** `MODEL_TYPE` (Champion) to `reports/pipeline_config.json` — merge into the existing file (keep `use_gpu`), `approval_confirmed = false` | — |
 | 8 | Stage summary (benchmark table, `MODEL_TYPE_proposed`, `champion_rationale`, `val_eval_hash`) — last cell | #file:../skills/stage-summary.md |
-| 9 | **After execution, in chat:** read the summary, show the benchmark table and the rationale, ask the user to confirm or override `MODEL_TYPE`, then update `reports/pipeline_config.json` from the terminal (snippet below) | — |
+| 9 | **After execution, in chat:** first, if `woe.undecided` is non-empty, no per-column questions: show `woe.status_counts` + top 10 per status and ask the user to set `decision = drop` in `reports/woe_iv.csv` for columns to remove (blank = keep on approval); for `high_iv_review` give the leakage checklist (built before the target? contains the target or a derivative? from a process with target access?); IV is univariate (low ≠ useless, high ≠ leakage). When done, run encode-and-impute Block 3 (dry run); the user repeats the kept count (`onay — 9 woe`) → `reports/woe_approval.json` `{"keep": 9}`; run Block 3 again; rerun the notebook only if `rerun_preprocess`, then check `woe.undecided == []`. Then read the summary, show the benchmark table and the rationale, ask the user to confirm or override `MODEL_TYPE`, then update `reports/pipeline_config.json` from the terminal (snippet below) | — |
 
 Step 7 — notebook cell (proposal, merge — never overwrite `use_gpu` set by the Orchestrator):
 
@@ -69,6 +70,7 @@ PY
 | `data/out_of_time/oot_raw.parquet` | Raw test rows + CONTACT columns (scored only by the frozen pipeline) |
 | `reports/data_profile.json` | Profile, adaptive defaults, train-only HPO fold plan, val plan hash |
 | `reports/null_cleaning_report.csv` | Null-like cleaning report |
+| `reports/woe_iv.csv`, `reports/woe_iv_auto.csv`, `reports/gate2_woe_decisions.csv` | Train IV per categorical (user edits only `decision`); read-only diff base; Gate 2 WoE decision log |
 | `reports/imputation_strategy.csv` | Per-model numeric strategy (`native_nan` / imputer) |
 | `reports/benchmark_results.csv` | Mean / std / worst-month val AUC, gap, bootstrap CI vs leader, Champion flag |
 | `reports/pipeline_config.json` | `MODEL_TYPE` in `catboost / lightgbm / xgboost` + `approval_*` fields (shared config; `use_gpu` preserved) |

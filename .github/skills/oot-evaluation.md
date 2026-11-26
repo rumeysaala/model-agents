@@ -84,6 +84,7 @@ def freeze_targets(pipeline_path, calibrator_path=None) -> list:
     files = [pipeline_path, "reports/selected_features.csv", "reports/best_params.json", "reports/calibration.json",
              "config/pipeline_contracts.json", "reports/pipeline_config.json"]
     files += [calibrator_path] if calibrator_path else []
+    files += ["config/gate_decisions.json"] if os.path.exists("config/gate_decisions.json") else []
     return files + sorted(glob.glob(".github/skills/*.md")) + sorted(glob.glob(".github/agents/*.md"))
 
 def write_freeze_manifest(pipeline_path, calibrator_path, features, params) -> dict:

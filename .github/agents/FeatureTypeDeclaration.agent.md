@@ -48,7 +48,7 @@ Load constants from `config/pipeline_contracts.json` as specified in #file:../sk
 
 4. Build the exclusion list and apply `excluded=True` with `exclude_reason` by following `#file:../skills/feature-type-declaration-rules.md` (includes `excluded_columns.leakage` → `leakage_user`)
 
-4b. **Data & leakage audit** — follow #file:../skills/data-audit.md (uses Block A of #file:../skills/temporal-data-split.md): monthly rows / positives / negatives / event rate per split, duplicate keys, target checks → `reports/data_audit.csv`; leakage suspects → `reports/leakage_audit.csv`; PSI train→val (non-fraud) → `reports/psi_drift.csv`; then `review_flags`. Report only — never exclude a suspect or a drifted feature yourself.
+4b. **Data & leakage audit** — follow #file:../skills/data-audit.md (uses Block A of #file:../skills/temporal-data-split.md): monthly rows / positives / negatives / event rate per split, duplicate keys, target checks → `reports/data_audit.csv`; leakage suspects → `reports/leakage_audit.csv`; data drift train→val (PSI, KS / Cramér's V, monthly PSI) → `reports/psi_drift.csv`, `reports/psi_monthly.csv`; then `review_flags`. Report only — never exclude a suspect or a drifted feature yourself.
 
 5. - Save the result as `reports/feature_types.csv` + snapshot `reports/feature_types_auto.csv` (end of the data-audit block). Schema:
 
@@ -70,12 +70,12 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 - Load constants from contracts as defined in `#file:../skills/feature-type-declaration-rules.md`
 - SQL ingestion (conditional — skip if `data/data.parquet` already exists, follow `#file:../skills/sql-data-ingestion.md`)
 - Data loading
-- PII auto-detection and contracts update 
+- PII auto-detection → `config/gate_decisions.json` `excluded.pii_auto` (merge, never write `pipeline_contracts.json`)
 - Auto bad feature derivation and final exclusion list build (follow `#file:../skills/feature-type-declaration-rules.md`)
 - Rerun safety check (right after constants)
 - Type determination logic and `feature_types_df` creation
 - Save `reports/high_corr_pairs.csv`
-- Data, leakage & PSI audit + review flags → `reports/data_audit.csv`, `reports/leakage_audit.csv`, `reports/psi_drift.csv`, then save `reports/feature_types.csv` + `reports/feature_types_auto.csv` (#file:../skills/data-audit.md)
+- Data, leakage & drift audit + review flags → `reports/data_audit.csv`, `reports/leakage_audit.csv`, `reports/psi_drift.csv`, `reports/psi_monthly.csv`, then save `reports/feature_types.csv` + `reports/feature_types_auto.csv` (#file:../skills/data-audit.md)
 - Stage summary → `reports/summaries/feature_type_declaration_summary.json` (#file:../skills/stage-summary.md)
 - Markdown analysis — appended **after** execution from the summary: type distribution, excluded feature count and reasons, suspicious ORDINAL/BOOLEAN calls the user should check
 
@@ -88,7 +88,7 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 | `reports/high_corr_pairs.csv` | Highly correlated pairs and which one was dropped |
 | `reports/data_audit.csv` | Split × period rows / positives / negatives / event rate (+ flag) |
 | `reports/leakage_audit.csv` | Leakage suspects for the user's Gate 1 decision |
-| `reports/psi_drift.csv` | PSI train→val per feature (non-fraud only; warning, no exclusion) |
+| `reports/psi_drift.csv`, `reports/psi_monthly.csv` | Drift train→val per feature (PSI, KS / Cramér's V, reasons) + monthly PSI vs full train (warning, no exclusion) |
 | `reports/feature_types_auto.csv` | Read-only snapshot of the FTD output (Gate 1 sync diff base) |
 | `reports/summaries/feature_type_declaration_summary.json` | Stage summary (read by agent + Orchestrator gate) |
 
@@ -96,7 +96,7 @@ Create/update `notebooks/01_feature_type_declaration.ipynb`. Cell structure:
 
 - Do NOT log or report PII columns in raw form
 - Do NOT perform modeling — only define types, audit and save
-- Do NOT exclude leakage suspects or drifted features automatically; only Gate 1 sync writes user decisions to contracts
+- Do NOT exclude leakage suspects or drifted features automatically; only Gate 1 sync writes user decisions (to `config/gate_decisions.json`)
 - SQL connection parameters are defined in `#file:../skills/sql-data-ingestion.md` — do not hardcode them elsewhere
 - Follow `random_state=42`, `encoding="ISO-8859-9"` standards
 - Each cell should have a single responsibility

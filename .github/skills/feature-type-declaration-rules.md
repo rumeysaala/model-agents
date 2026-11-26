@@ -15,6 +15,8 @@ Read these values from contracts:
 
 ## Constants
 
+`contracts` comes from temporal-data-split.md Block A (run it first; it merges `config/gate_decisions.json`).
+
 ```python
 PII_COLS = contracts["excluded_columns"]["pii"]
 BAD_FEATURES_USER = contracts["excluded_columns"]["bad_features"]
@@ -29,7 +31,7 @@ HIGH_UNIQUE_THRESHOLD = 0.90
 ## Rerun Safety (cell right after constants)
 
 At Gate 1 the user may edit `final_type` / `excluded` in `reports/feature_types.csv`. Gate 1 sync writes those edits
-to contracts and stores the CSV hash in `reports/gate1_synced.json`. Never overwrite unsynced edits:
+to `config/gate_decisions.json` and stores the CSV hash in `reports/gate1_synced.json`. Never overwrite unsynced edits:
 
 ```python
 import hashlib, shutil, datetime as dt
@@ -50,13 +52,17 @@ if os.path.exists(FT) and os.path.exists(FT_AUTO):
 
 ## Gate 1 Sync (run by the Orchestrator on approval, not in the notebook)
 
-Merges the CSV edits (`final_type` / `excluded` vs `feature_types_auto.csv`) with `reports/gate1_chat.json`, rejects
-CSV-vs-chat conflicts and edits to read-only columns, writes the decisions to contracts, appends to
-`reports/gate1_decisions.csv` and stores the CSV hash in `reports/gate1_synced.json`.
+File review only, no per-column chat. Reads the CSV edits (`final_type` / `excluded` vs `feature_types_auto.csv`),
+rejects edits to read-only columns. **Approval = keep the rest**: every `drift` / `leakage_suspect` row the user left
+un-excluded is recorded as keep. Without `reports/gate1_approval.json` (`{"drift": n, "leakage_suspect": m}`, the kept
+counts the user typed) or when its counts differ from the files, it is a **dry run**: prints the counts, writes nothing.
+On success it writes `config/gate_decisions.json` (never `pipeline_contracts.json`), appends to `reports/gate1_decisions.csv`, stores the CSV hash in
+`reports/gate1_synced.json` and deletes the approval file.
 
 ```python
 import json, os, hashlib, datetime as dt, pandas as pd
-C = "config/pipeline_contracts.json"; ct = json.load(open(C)); ex = ct["excluded_columns"]
+C, GD = "config/pipeline_contracts.json", "config/gate_decisions.json"; ct = json.load(open(C))   # ct read-only
+gd = json.load(open(GD, encoding="utf-8")) if os.path.exists(GD) else {}; ex = gd.setdefault("excluded", {})
 rd = lambda p: pd.read_csv(p, sep=None, engine="python").set_index("col")        # Excel may save with ';'
 cur, auto = rd("reports/feature_types.csv"), rd("reports/feature_types_auto.csv")
 b = lambda s: s.astype(str).str.lower().isin(["true", "1"])
@@ -66,44 +72,52 @@ bad = sorted(set(auto.index) ^ set(cur.index)) + [c for c in auto.index.intersec
        if not cur.loc[c, ro].fillna("").astype(str).equals(auto.loc[c, ro].fillna("").astype(str))]
 assert not bad, f"Only final_type / excluded are editable; restore: {bad[:10]}"
 cur = cur.loc[auto.index]
-chat = json.load(open("reports/gate1_chat.json")) if os.path.exists("reports/gate1_chat.json") else {}
-edits, conflicts = {}, []
-for f in ("final_type", "excluded"):
-    for c in auto.index[cur[f] != auto[f]]: edits[(c, f)] = (cur.at[c, f], "csv")
-    for c, v in chat.get(f, {}).items():
-        if (c, f) in edits and edits[(c, f)][0] != v: conflicts.append((c, f, edits[(c, f)][0], v))
-        else: edits[(c, f)] = (v, "chat")
-assert not conflicts, f"CSV vs chat conflicts (col, field, csv, chat) — ask the user: {conflicts}"
+edits = {(c, f): (cur.at[c, f], "csv") for f in ("final_type", "excluded") for c in auto.index[cur[f] != auto[f]]}
+_fl = lambda c: str(auto.at[c, "review_flags"]).split("|")
+dflt = {k: [c for c in auto.index if k in _fl(c) and (c, "excluded") not in edits] for k in ("drift", "leakage_suspect")}
+A = "reports/gate1_approval.json"; appr = json.load(open(A)) if os.path.exists(A) else {}
+got = {k: len(v) for k, v in dflt.items()}
+if {k: appr.get(k) for k in got} != got:
+    print(f"DRY RUN — kept on approval: {got}; excluded/type edits: {len(edits)} "
+          f"{sorted(c for c, _ in edits)[:10]}. Ask the user to reply with these counts."); raise SystemExit(0)
+for cols in dflt.values():
+    for c in cols: edits.setdefault((c, "excluded"), (False, "approval_default"))
 fts = json.load(open("reports/summaries/feature_type_declaration_summary.json")); key = fts.get("psi_key") or {}
-pdc = ct.get("psi_decisions") or {}
+pdc = gd.get("psi_decisions") or {}
 if {k: pdc.get(k) for k in key} != key: pdc = {**key, "features": {}}
-psi = pd.read_csv("reports/psi_drift.csv").set_index("feature").psi_train_val if os.path.exists("reports/psi_drift.csv") else {}
+pdr = pd.read_csv("reports/psi_drift.csv").set_index("feature") if os.path.exists("reports/psi_drift.csv") else None
+def _psi_snap(c, new):
+    r = pdr.loc[c].astype(object); r = r.where(r.notna(), None)
+    pdc["features"][c] = {"action": "exclude" if new else "keep", "psi": r.psi_train_val,
+                          **r[["drift_test", "drift_stat", "stat_status", "psi_monthly_max"]].to_dict(), "drift_reason": r.drift_reason or ""}
 add = lambda k, c: ex.setdefault(k, []).append(c) if c not in ex.get(k, []) else None
 rm = lambda k, c: ex[k].remove(c) if c in ex.get(k, []) else None
 log, now = [], dt.datetime.now().isoformat(timespec="seconds")
 for (c, f), (new, src) in edits.items():
     fl, why = str(auto.at[c, "review_flags"]).split("|"), str(auto.at[c, "exclude_reason"])
     if f == "final_type":
-        k = "type_overrides"; ov = ct.setdefault(k, {})
+        k = "type_overrides"; ov = gd.setdefault(k, {})
         ov.pop(c, None) if new == auto.at[c, "detected_type"] else ov.update({c: new})
     elif why in ("PII", "target") and not new: raise ValueError(f"{c}: {why} cannot be un-excluded")
     elif "leakage_suspect" in fl or why == "leakage_user":
-        k = "excluded_columns.leakage"; (add("leakage", c), rm("leakage_reviewed", c)) if new else (rm("leakage", c), add("leakage_reviewed", c))
+        k = "excluded.leakage"; (add("leakage", c), rm("leakage_reviewed", c)) if new else (rm("leakage", c), add("leakage_reviewed", c))
+        if "drift" in fl: _psi_snap(c, new)                     # both flags → drift decision too
     elif "drift" in fl or why == "drift_user":
-        k = "psi_decisions"; pdc["features"][c] = {"action": "exclude" if new else "keep", "psi": float(psi[c])}
-    elif new: k = "excluded_columns.manual"; add("manual", c)
-    elif why == "manual_user": k = "excluded_columns.manual"; rm("manual", c)
-    elif why == "bad_feature_user": k = "excluded_columns.bad_features"; rm("bad_features", c)
-    elif why.startswith("bad_feature"): k = "excluded_columns.keep_override"; add("keep_override", c)
+        k = "psi_decisions"; _psi_snap(c, new)
+    elif new: k = "excluded.manual"; add("manual", c)
+    elif why == "manual_user": k = "excluded.manual"; rm("manual", c)
+    elif why == "bad_feature_user": k = "excluded.bad_features_undo"; add("bad_features_undo", c)
+    elif why.startswith("bad_feature"): k = "excluded.keep_override"; add("keep_override", c)
     else: continue
     log.append({"timestamp": now, "col": c, "field": f, "old": auto.at[c, f], "new": new, "source": src,
                 "contract_key": k, "val_periods": "|".join(ct["temporal_split"]["val_periods"])})
-if pdc.get("features"): ct["psi_decisions"] = pdc
-json.dump(ct, open(C, "w"), indent=2, ensure_ascii=False)
+if pdc.get("features"): gd["psi_decisions"] = pdc
+json.dump(gd, open(GD, "w"), indent=2, ensure_ascii=False)
 L = "reports/gate1_decisions.csv"; pd.DataFrame(log).to_csv(L, mode="a", header=not os.path.exists(L), index=False)
 json.dump({"sha256": hashlib.sha256(open("reports/feature_types.csv", "rb").read()).hexdigest(), "synced_at": now},
           open("reports/gate1_synced.json", "w"))
-print(f"{len(log)} decisions synced → contracts; rerun FTD: {bool(log)}")
+os.remove(A)
+print(f"{len(log)} decisions synced → {GD}; rerun FTD: {any(x['source'] == 'csv' for x in log)}")
 ```
 
 ## Auto Bad Feature Rules

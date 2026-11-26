@@ -8,11 +8,11 @@ Canonical skill root: `.github/skills`
 | stage-summary | stage-summary.md | write small `reports/summaries/<stage>_summary.json` at the end of every stage notebook | all stage agents |
 | sql-data-ingestion | sql-data-ingestion.md | pull data from SQL in chunks and save as parquet | FeatureTypeDeclaration |
 | feature-type-declaration-rules | feature-type-declaration-rules.md | build exclusion list (PII + user leakage + bad features + datetime + high-unique), assign feature types, rerun safety + Gate 1 sync | FeatureTypeDeclaration, Orchestrator (Gate 1 sync) |
-| data-audit | data-audit.md | monthly rows / positives / event rate, duplicates, target checks; leakage-suspect report, PSI train→val warning (non-fraud), Gate 1 review flags (no auto exclusion) | FeatureTypeDeclaration |
+| data-audit | data-audit.md | monthly rows / positives / event rate, duplicates, target checks; leakage-suspect report, data drift train→val (PSI, KS / Cramér's V, monthly PSI; warning), Gate 1 review flags (no auto exclusion) | FeatureTypeDeclaration |
 | correlation | correlation.md | high-correlation pair detection and exclusion | FeatureTypeDeclaration |
 | temporal-data-split | temporal-data-split.md | period normalisation, train/val/test split, train-only HPO fold plan, fixed validation evaluation plan | FeatureTypeDeclaration, Preprocess, ModelTrainer |
 | null-like-cleaning | null-like-cleaning.md | null-like value cleaning (Block 1 pattern reused by the deployable pipeline) | Preprocess, ModelTrainer |
-| encode-and-impute | encode-and-impute.md | model-based encoding; native NaN unless contracts set an imputer | Preprocess |
+| encode-and-impute | encode-and-impute.md | model-based encoding; native NaN unless contracts set an imputer; WoE / IV report and Gate 2 WoE decisions (train only) | Preprocess |
 | save-processed-parquet | save-processed-parquet.md | persist processed splits to parquet | Preprocess |
 | save-oot-parquet | save-oot-parquet.md | persist raw OOT test rows + CONTACT cols (scored only after freeze) | Preprocess |
 | benchmark-models | benchmark-models.md | full-train benchmark on fixed val months + pre-declared Champion rule | Preprocess |
@@ -29,7 +29,8 @@ Canonical skill root: `.github/skills`
 All agents in `.github/agents` must read:
 - `config/pipeline_contracts.json`
 
-Contract values override hardcoded assumptions.
+Contract values override hardcoded assumptions. `pipeline_contracts.json` is user-owned and never written by code; gate
+decisions go to `config/gate_decisions.json` (only the Gate 1 / WoE syncs write it) and are merged in memory by temporal-data-split Block A.
 
 ## Execution Alignment
 
